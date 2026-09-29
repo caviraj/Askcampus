@@ -14,24 +14,25 @@ Spec documents live in `docs/`.
 
 ## Status
 
-**Phase 3 of 6 (Retrieval and answering) is complete.** A student can `POST /chat` with a question and
-get an answer drawn only from retrieved document text, with a citation naming the document, page and
-section it came from — or an honest fallback, logged for admins. There is still no UI: Phases 4 and 5
-build the student and admin frontends, and Phase 6 writes the evaluation set.
+**Phase 4 of 6 (Student UI) is complete.** A student opens the chat page, asks a question in plain
+language, and reads an answer drawn only from retrieved document text with a **source slip** beside
+it — expandable to the passage it came from, with the supporting sentence marked. Questions the
+documents do not answer come back as an honest fallback naming the office that handles them, and are
+logged for admins. Phase 5 builds the admin UI and Phase 6 the evaluation set.
 
 | Phase | Scope | State |
 |---|---|---|
 | 1 | Scaffold, config, migrations, admin auth gate | done |
 | 2 | Ingestion: upload, extraction, chunking, embeddings | done |
 | 3 | Retrieval and answering | done |
-| 4 | Student UI | not started |
+| 4 | Student UI | done |
 | 5 | Admin UI | not started |
 | 6 | Evaluation and tuning | not started |
 
 ## Prerequisites
 
 - Python 3.11 or newer (developed and tested on 3.14)
-- Node.js 20 or newer — only needed from Phase 4
+- Node.js 20 or newer — needed for the frontend from Phase 4 onward
 - A Supabase project with the `vector` extension, and the migrations applied
 - A Gemini API key — ingestion cannot run without one
 
@@ -49,7 +50,12 @@ backend/     FastAPI application
 supabase/migrations/   schema, applied in filename order
 docs/                  the spec documents
 eval/                  Phase 6
-frontend/              Phase 4
+frontend/              React 19 + Vite + Tailwind student chat
+  src/pages/       the chat page
+  src/components/  the message list, source slips, chips, composer
+  src/hooks/       the chat reducer, media query, textarea autogrow
+  src/lib/         the API client, types, error mapping, highlighting
+  src/test/        the Vitest harness
 ```
 
 ## Setup
@@ -85,6 +91,27 @@ uvicorn app.main:app --reload --port 8000
 - `GET /health` → `{"status": "ok", "version": ..., "environment": ...}`. Liveness only; it does not
   touch Supabase.
 - `/docs` → interactive API documentation.
+
+## Frontend
+
+```bash
+cd frontend
+npm install
+cp .env.example .env            # VITE_API_URL, if the backend is not on :8000
+npm run dev                     # http://localhost:5173
+```
+
+With the backend running, upload a document through `/docs`, wait for it to reach `ready`, then ask a
+question its text answers. The answer arrives with a source slip beside it; expanding the slip shows
+the passage with the supporting sentence marked.
+
+```bash
+npm run lint && npm run typecheck && npm test && npm run build
+```
+
+`npm test` runs Vitest against jsdom with `fetch` stubbed, so the suite needs no backend and no
+network. Tailwind does not run in tests — assertions are on token class names, and a mistyped token is
+caught by `npm run build`.
 
 ## Ingestion
 
@@ -279,15 +306,25 @@ nothing hardcodes them.
 
 ## Frontend contract
 
-Phase 4 reads these three variables from `frontend/.env`. They are recorded now so the naming is
-fixed before anything depends on it:
+The student UI reads **one** variable, documented in `frontend/.env.example`:
 
 ```
-VITE_SUPABASE_URL=https://your-project-ref.supabase.co
-VITE_SUPABASE_ANON_KEY=your-anon-key
 VITE_API_URL=http://localhost:8000
 ```
 
-Only the anon key is exposed to the browser. The anon key grants nothing directly — every table has
-row level security enabled with default-deny, so PostgREST returns no rows to it. All reads and
-writes go through the FastAPI backend, which holds the service role key.
+It is the only thing the chat needs. The Supabase pair below belongs to Phase 5's admin login: a
+student-facing chat has no Supabase client and no auth, so it must not be handed a key it has no use
+for. The names are fixed ahead of that phase anyway:
+
+```
+VITE_SUPABASE_URL=https://your-project-ref.supabase.co
+VITE_SUPABASE_ANON_KEY=<anon-key>          # Phase 5
+```
+
+Only the anon key would be exposed to the browser. It grants nothing directly — every table has row
+level security enabled with default-deny, so PostgREST returns no rows to it. All reads and writes go
+through the FastAPI backend, which holds the service role key.
+
+The API paths carry no `/api` prefix, so `POST /chat`, `POST /chat/feedback` and `GET /categories`
+are reached at `${VITE_API_URL}/chat` and so on. Every non-2xx body is exactly `{detail, code}`, and
+`answered: false` is a **200**, not an error — it carries the fallback the server decided on.

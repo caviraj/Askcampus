@@ -72,12 +72,18 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     # allow_credentials stays False: the access token travels in an
     # Authorization header, not a cookie, so credentialed CORS would buy nothing
     # while requiring exact origins.
+    #
+    # expose_headers is not optional. `Retry-After` is not a CORS-safelisted
+    # response header, so without this the browser hides it from the 429 handler
+    # on /chat: the request still fails correctly, and the countdown silently
+    # falls back to a hardcoded default forever. Nothing else would report it.
     app.add_middleware(
         CORSMiddleware,
         allow_origins=settings.cors_origins,
         allow_credentials=False,
         allow_methods=["GET", "POST", "PATCH", "DELETE", "OPTIONS"],
         allow_headers=["Authorization", "Content-Type"],
+        expose_headers=["Retry-After"],
     )
 
     app.add_exception_handler(StarletteHTTPException, api_error_handler)

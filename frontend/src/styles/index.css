@@ -1,0 +1,29 @@
+@import "./tokens.css";
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  html {
+    /* Section 11: layout is tested at 200% zoom, which is a browser zoom rather
+       than a text-size override, so the root size stays at the user's default. */
+    -webkit-text-size-adjust: 100%;
+  }
+
+  body {
+    @apply bg-paper font-sans text-ink antialiased;
+  }
+
+  /* Section 11: a visible focus ring on every interactive element, from the
+     token rather than a Tailwind default so it matches the primary colour. */
+  :focus-visible {
+    outline: 2px solid var(--marine);
+    outline-offset: 2px;
+  }
+
+  /* Section 5's single sanctioned shadow: the floating composer on mobile. */
+  .composer-shadow {
+    box-shadow: 0 -1px 0 var(--rule);
+  }
+}

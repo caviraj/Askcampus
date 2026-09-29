@@ -206,6 +206,10 @@ async def test_the_office_variant_names_a_department_from_a_row(make: Any) -> No
     outcome = await harness.ask()
 
     assert outcome.answer == FALLBACK_OFFICE.format(office="Examinations")
+    # Carried alongside the message rather than only inside it, so the UI can
+    # render the office the message refers to -- DESIGN_SYSTEM.md section 8's
+    # "Ask the office" action has nowhere else to get the name.
+    assert outcome.office == "Examinations"
 
 
 async def test_a_document_with_no_department_gives_the_generic_message(make: Any) -> None:
@@ -213,7 +217,25 @@ async def test_a_document_with_no_department_gives_the_generic_message(make: Any
     harness = make()
     harness.seed(similarity=WEAK, department=None)
 
-    assert (await harness.ask()).answer == FALLBACK_GENERIC
+    outcome = await harness.ask()
+
+    assert outcome.answer == FALLBACK_GENERIC
+    assert outcome.office is None
+    # DESIGN_SYSTEM.md section 9's row ends "Try the office below, or ask
+    # staff."; neither is on the screen here, so the message must not say so.
+    assert "office" not in outcome.answer
+
+
+async def test_an_answered_question_carries_no_office(make: Any) -> None:
+    """A citation names a document, not an office. A department leaking through
+    would put an office card under an answer that never mentioned one."""
+    harness = make([answer_payload()])
+    harness.seed(department="Examinations")
+
+    outcome = await harness.ask()
+
+    assert outcome.answered is True
+    assert outcome.office is None
 
 
 async def test_the_office_comes_from_the_best_ranked_chunk_that_has_one(make: Any) -> None:
@@ -226,6 +248,7 @@ async def test_the_office_comes_from_the_best_ranked_chunk_that_has_one(make: An
     outcome = await harness.ask()
 
     assert outcome.answer == FALLBACK_OFFICE.format(office="Admissions")
+    assert outcome.office == "Admissions"
 
 
 async def test_an_unanswerable_response_is_a_fallback(make: Any) -> None:

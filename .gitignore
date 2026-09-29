@@ -13,10 +13,12 @@ venv/
 .pytest_cache/
 .ruff_cache/
 
-# Node (frontend arrives in Phase 4)
+# Node
 node_modules/
 dist/
 .vite/
+# Incremental build state from `tsc -b`; regenerated on every build.
+*.tsbuildinfo
 
 # Editors and OS
 .vscode/

@@ -1,0 +1,30 @@
+/* DESIGN_SYSTEM.md section 12, copied verbatim. */
+:root {
+  --paper: #F1F3F2;
+  --surface: #FFFFFF;
+  --ink: #17262B;
+  --ink-soft: #4A5D63;
+  --rule: #D5DCDA;
+  --marine: #0E5A6B;
+  --marine-deep: #0A4350;
+  --marine-wash: #DCEBEE;
+  --highlight: #F6D84C;
+  --moss: #2E7A55;
+  --brick: #A83A2E;
+  --amber-ink: #7A5A00;
+
+  --font-serif: "Source Serif 4", Georgia, serif;
+  --font-sans: "IBM Plex Sans", system-ui, sans-serif;
+
+  --radius-control: 4px;
+  --radius-panel: 10px;
+
+  --space-1: 4px;  --space-2: 8px;  --space-3: 12px;
+  --space-4: 16px; --space-5: 24px; --space-6: 32px; --space-7: 48px;
+
+  --measure: 65ch;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  * { animation: none !important; transition: none !important; }
+}

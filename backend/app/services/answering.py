@@ -29,7 +29,7 @@ from app.providers.llm import LLMProvider
 from app.schemas.chat import CategoryFilter, Citation, HistoryTurn, ModelAnswer
 from app.schemas.documents import Category
 from app.services.classifier import classify
-from app.services.fallback import fallback_message
+from app.services.fallback import fallback_for
 from app.services.normalization import question_hash
 from app.services.query_log import LoggedSource, QueryLogRepository
 from app.services.retrieval import RetrievalResult, RetrievalService, RetrievedChunk
@@ -79,6 +79,12 @@ class AnswerOutcome:
     category: Category | None
     answer: str
     citations: list[Citation]
+    # The department the fallback names, when it names one, so the UI can show
+    # the office the message refers to instead of saying "the office below" and
+    # leaving nothing below. None on every answered path -- a citation names a
+    # document, not an office, and a stray value here would put an office card
+    # under an answer that never mentioned one.
+    office: str | None = None
 
 
 @dataclass(frozen=True)
@@ -251,7 +257,7 @@ class AnsweringService:
         started: float,
     ) -> AnswerOutcome:
         """Say so honestly, and make sure an admin can see that we said so."""
-        message = fallback_message(result.chunks)
+        message, office = fallback_for(result.chunks)
         await self._log(
             query_id=query_id,
             session_id=session_id,
@@ -272,6 +278,7 @@ class AnsweringService:
             category=category,
             answer=message,
             citations=[],
+            office=office,
         )
 
     async def _log(

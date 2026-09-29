@@ -46,6 +46,20 @@ async def test_authorization_header_is_an_allowed_cors_header(
     assert "authorization" in allowed
 
 
+async def test_retry_after_is_readable_from_the_browser(client: httpx.AsyncClient) -> None:
+    """`Retry-After` is not a CORS-safelisted response header.
+
+    Without `expose_headers`, the browser hides it from the 429 handler on
+    /chat: the request still fails correctly, so nothing looks wrong, and the
+    rate-limit countdown silently falls back to a hardcoded default forever.
+    Asserted on the preflight here because no other test would notice.
+    """
+    response = await client.get("/health", headers={"Origin": "http://localhost:5173"})
+
+    exposed = response.headers.get("access-control-expose-headers", "").lower()
+    assert "retry-after" in exposed
+
+
 async def test_lifespan_starts_and_stops_without_network(app: FastAPI) -> None:
     """Startup and shutdown must complete with no Supabase project reachable.
 

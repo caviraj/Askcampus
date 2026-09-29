@@ -19,6 +19,7 @@ from app.api.chat import RATE_LIMITED_MESSAGE
 from app.api.errors import PROVIDER_UNAVAILABLE_MESSAGE
 from app.config import Settings
 from app.providers.errors import ProviderError
+from app.services.fallback import FALLBACK_GENERIC, FALLBACK_OFFICE
 from app.services.ratelimit import SlidingWindowRateLimiter
 from tests.fakes import (
     FakeLLMProvider,
@@ -34,7 +35,7 @@ CATEGORIES_URL = "/categories"
 SESSION = str(UUID("44444444-4444-4444-4444-444444444444"))
 OTHER_SESSION = str(UUID("55555555-5555-5555-5555-555555555555"))
 
-RESPONSE_KEYS = {"query_id", "answered", "category", "answer", "citations"}
+RESPONSE_KEYS = {"query_id", "answered", "category", "answer", "citations", "office"}
 CITATION_KEYS = {"label", "document_title", "page", "section", "snippet", "last_updated"}
 
 
@@ -127,6 +128,61 @@ async def test_a_fallback_is_a_200_with_no_citations(
     assert payload["answered"] is False
     assert payload["citations"] == []
     assert payload["answer"]
+
+
+async def test_a_fallback_names_the_office_its_chunk_belongs_to(
+    client: httpx.AsyncClient, chunk_repository: InMemoryChunkRepository
+) -> None:
+    """DESIGN_SYSTEM.md section 9's contact-known fallback, and section 8's "Ask
+    the office" action, both of which need the office in the body.
+
+    AGENTS.md section 6.5 forbids the client inventing one, so the name can only
+    come from `documents.department` -- which is why this asserts the exact
+    department the row carries.
+    """
+    seed_chunk(chunk_repository, similarity=0.2, department="Examinations")
+
+    payload = (await client.post(CHAT_URL, json=body())).json()
+
+    assert payload["answered"] is False
+    assert payload["office"] == "Examinations"
+    assert payload["answer"] == FALLBACK_OFFICE.format(office="Examinations")
+
+
+async def test_a_fallback_without_a_department_does_not_point_at_an_office(
+    client: httpx.AsyncClient, chunk_repository: InMemoryChunkRepository
+) -> None:
+    """The other half: with no department there is no office to name, so the
+    response must not say there is one.
+
+    DESIGN_SYSTEM.md section 9's row ends "Try the office below, or ask staff."
+    On this path neither exists, so the message is its first sentence alone.
+    """
+    seed_chunk(chunk_repository, similarity=0.2, department=None)
+
+    payload = (await client.post(CHAT_URL, json=body())).json()
+
+    assert payload["answered"] is False
+    assert payload["office"] is None
+    assert payload["answer"] == FALLBACK_GENERIC
+    assert "office below" not in payload["answer"]
+
+
+async def test_an_answered_question_carries_no_office(
+    client: httpx.AsyncClient,
+    chunk_repository: InMemoryChunkRepository,
+    llm_provider: FakeLLMProvider,
+) -> None:
+    """A citation names a document, not an office. A department leaking into an
+    answered response would put an office card under an answer that never
+    mentioned one, and the student would read it as part of the evidence."""
+    seed_chunk(chunk_repository, department="Examinations")
+    llm_provider.responses.append(answer_payload())
+
+    payload = (await client.post(CHAT_URL, json=body())).json()
+
+    assert payload["answered"] is True
+    assert payload["office"] is None
 
 
 async def test_an_empty_question_is_refused(client: httpx.AsyncClient) -> None:

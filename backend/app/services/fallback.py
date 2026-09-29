@@ -14,17 +14,23 @@ from collections.abc import Sequence
 
 from app.services.retrieval import RetrievedChunk
 
-# DESIGN_SYSTEM.md section 9, verbatim.
+# DESIGN_SYSTEM.md section 9's "Fallback" row, first sentence only.
 #
-# Its second sentence says "the office below", and the low-similarity path this
-# is used on has no office to show. Left as specified rather than reworded,
-# flagged in the Phase 3 report for Phase 4 to resolve together with the
-# "Ask the office" action in DESIGN_SYSTEM.md section 8.
-FALLBACK_GENERIC = (
-    "This is not in the college documents I have. Try the office below, or ask staff."
-)
+# The row in full reads: "This is not in the college documents I have. Try the
+# office below, or ask staff." The second sentence is dropped, and only on this
+# path: nothing retrieved names a department, so there is no office below, and
+# `[Ask staff]` is not built because there is no contacts table. A sentence
+# pointing at two things that are not on the screen is worse than a shorter one
+# that points at nothing.
+#
+# Purely subtractive -- the first sentence is byte-identical to the spec and the
+# second is removed, never reworded. DESIGN_SYSTEM.md section 9 is locked, so
+# this is agreed with the user and recorded in the Phase 4 report.
+FALLBACK_GENERIC = "This is not in the college documents I have."
 
-# DESIGN_SYSTEM.md section 9's contact-known variant, with the office named.
+# DESIGN_SYSTEM.md section 9's "Fallback (contact known)" row, with the office
+# named. Self-contained: it names the office rather than pointing at one, so it
+# needs no second sentence removed and no action behind it.
 FALLBACK_OFFICE = "This is not in the documents I have. The {office} handles this."
 
 
@@ -41,9 +47,20 @@ def office_from(chunks: Sequence[RetrievedChunk]) -> str | None:
     return None
 
 
-def fallback_message(chunks: Sequence[RetrievedChunk]) -> str:
-    """The message for a question the documents did not answer."""
+def fallback_for(chunks: Sequence[RetrievedChunk]) -> tuple[str, str | None]:
+    """The message for a question the documents did not answer, and the office it names.
+
+    Both together, because they are one decision. The route reports the office
+    this function chose; recomputing it at the call site would be a second place
+    that has to agree about which chunk won, and the two could drift -- leaving
+    the student with a message naming one office and a card naming another.
+    """
     office = office_from(chunks)
     if office is None:
-        return FALLBACK_GENERIC
-    return FALLBACK_OFFICE.format(office=office)
+        return FALLBACK_GENERIC, None
+    return FALLBACK_OFFICE.format(office=office), office
+
+
+def fallback_message(chunks: Sequence[RetrievedChunk]) -> str:
+    """The message alone, for a caller with nowhere to put the office."""
+    return fallback_for(chunks)[0]

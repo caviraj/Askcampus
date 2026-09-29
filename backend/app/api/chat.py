@@ -118,6 +118,7 @@ async def ask_question(
         category=outcome.category,
         answer=outcome.answer,
         citations=outcome.citations,
+        office=outcome.office,
     )
 
 

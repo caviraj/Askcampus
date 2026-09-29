@@ -99,13 +99,22 @@ class Citation(BaseModel):
 
 
 class ChatResponse(BaseModel):
-    """An answer, or an honest fallback. `answered` is the discriminator."""
+    """An answer, or an honest fallback. `answered` is the discriminator.
+
+    `office` is not in ARCHITECTURE.md section 5.2's shape; it is here because
+    DESIGN_SYSTEM.md section 9's fallback says "the office below" and section 8
+    gives the fallback message an "Ask the office" action. Both need the office
+    named, and AGENTS.md section 6.5 forbids the client -- or the model --
+    supplying one, so it can only travel in the body. Additive and optional, the
+    same posture `category` took in Phase 3.
+    """
 
     query_id: UUID
     answered: bool
     category: Category | None = None
     answer: str
     citations: list[Citation] = Field(default_factory=list)
+    office: str | None = None
 
 
 class FeedbackRequest(BaseModel):
