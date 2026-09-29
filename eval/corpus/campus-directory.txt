@@ -1,0 +1,51 @@
+# Campus Directory
+
+--- page 1 ---
+
+## 1. Departments and offices
+
+| Department | Head | Office | Extension |
+| Computer Science | Dr. Meera Iyer | Block C, Room 204 | 2140 |
+| Electronics | Dr. Anil Kumar | Block C, Room 108 | 2112 |
+| Mechanical Engineering | Dr. Rukmini Rao | Block D, Room 301 | 2301 |
+| Commerce | Dr. Farhan Ahmed | Block B, Room 112 | 2210 |
+| English | Dr. Sara Thomas | Block B, Room 106 | 2204 |
+
+The head of a department holds office hours on Monday and Thursday from 11:00 to
+13:00. An appointment is needed outside those hours.
+
+## 2. Administrative offices
+
+| Office | Location | Extension |
+| Examination Cell | Administrative Block, Ground floor | 1002 |
+| Academic Section | Administrative Block, First floor | 1010 |
+| Admissions Office | Administrative Block, Ground floor | 1005 |
+| Accounts Office | Administrative Block, First floor | 1020 |
+| Hostel Warden | Hostel Block H1, Ground floor | 1101 |
+
+--- page 2 ---
+
+## 3. Library
+
+The central library is open from 08:00 to 20:00 on weekdays and from 09:00 to
+17:00 on Saturdays. The library is closed on Sundays and on public holidays.
+
+A student may borrow up to four books at a time for fourteen days. A book
+returned late is charged two rupees per day. Reference books and journals may
+not be borrowed.
+
+The reading hall on the first floor stays open until 22:00 during the
+examination months of December and April.
+
+## 4. Hostel
+
+The hostel warden's office is on the ground floor of Hostel Block H1 and is open
+from 09:00 to 17:00 on weekdays. The warden's extension is 1101.
+
+Hostel gates close at 22:30. A student who needs to stay out later must inform
+the warden in writing before 18:00 on the same day.
+
+## 5. Canteen
+
+The canteen is on the ground floor of the Student Centre and serves from 07:30 to
+18:00. It accepts the campus card and cash. The canteen is closed on Sundays.

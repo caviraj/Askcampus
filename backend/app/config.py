@@ -89,7 +89,25 @@ class Settings(BaseSettings):
     embedding_task_type: str = "RETRIEVAL_DOCUMENT"
     query_embedding_task_type: str = "RETRIEVAL_QUERY"
 
-    # Retrieval tuning. Tuned against the eval set in Phase 6.
+    # Retrieval tuning. `eval/run_eval.py --sweep` reports the threshold that
+    # meets the section 9 targets, but only for whichever provider it ran on, and
+    # the two providers do not share a scale: the offline lexical stand-in puts
+    # that number at 0.25, which is not 0.25 here.
+    #
+    # The Gemini run is the one that counts, and it was run against the real
+    # embedder. It did not move this value, because on this corpus the threshold
+    # is not what binds: at 0.55 every out-of-scope question was refused and the
+    # answer-rate target was met, while the one answer that cited a document that
+    # does not hold its fact sat at 0.600 -- raising the threshold past it would
+    # have to pass 0.646 and 0.665, and would cost two correct answers to remove
+    # one wrong one. That failure is a classification defect, not a threshold
+    # one; see `app/services/classifier.py`. ARCHITECTURE.md names 0.55 as the
+    # starting point and nothing measured since has argued for leaving it.
+    #
+    # A full sweep costs roughly 500 generation calls, and the generation
+    # endpoint was returning 503s throughout the run that measured the above, so
+    # the sweep is deferred rather than done. Re-run it when that endpoint is
+    # healthy: `python eval/run_eval.py --provider gemini --sweep`.
     similarity_threshold: float = Field(default=0.55, ge=-1.0, le=1.0)
     top_k: int = Field(default=5, ge=1, le=20)
     max_upload_mb: int = Field(default=20, gt=0)

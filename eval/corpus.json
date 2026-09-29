@@ -1,0 +1,59 @@
+{
+  "notes": [
+    "The seed knowledge base the offline evaluation runs against, one entry per file in eval/corpus/.",
+    "The text files are authored the way a college's documents are: headings, paragraphs and tables. `harness.load_corpus` parses them into the same ExtractedDocument the PDF, DOCX and TXT extractors produce, so the real cleaner and the real heading-aware chunker run over them and the chunk boundaries, section breadcrumbs and page numbers in the evaluation are the ones the product would produce.",
+    "`category` and `department` are the columns the admin upload form fills. `department` is what the fallback message names, so it has to be a real office name.",
+    "The corpus is small and deliberately so: it is a fixture, not a knowledge base. It is large enough that a question has to actually retrieve the right passage rather than being handed it, and small enough that a person can read all of it and check every expected answer by eye."
+  ],
+  "page_marker": "^--- page (\\d+) ---$",
+  "documents": [
+    {
+      "file": "examination-handbook.txt",
+      "title": "Examination Handbook 2026-27",
+      "category": "examinations",
+      "department": "Examination Cell",
+      "academic_year": "2026-27",
+      "updated_at": "2026-08-01T09:00:00+00:00"
+    },
+    {
+      "file": "admission-brochure.txt",
+      "title": "Admission Brochure 2026",
+      "category": "admissions",
+      "department": "Admissions Office",
+      "academic_year": "2026-27",
+      "updated_at": "2026-04-20T09:00:00+00:00"
+    },
+    {
+      "file": "academic-regulations.txt",
+      "title": "Academic Regulations",
+      "category": "academic_processes",
+      "department": "Academic Section",
+      "academic_year": "2026-27",
+      "updated_at": "2026-07-15T09:00:00+00:00"
+    },
+    {
+      "file": "campus-directory.txt",
+      "title": "Campus Directory",
+      "category": "departments",
+      "department": "Administration",
+      "academic_year": "2026-27",
+      "updated_at": "2026-07-30T09:00:00+00:00"
+    },
+    {
+      "file": "events-calendar.txt",
+      "title": "Events Calendar 2026-27",
+      "category": "events",
+      "department": "Student Affairs",
+      "academic_year": "2026-27",
+      "updated_at": "2026-08-05T09:00:00+00:00"
+    },
+    {
+      "file": "general-notices.txt",
+      "title": "General Notices",
+      "category": "general",
+      "department": "Administration",
+      "academic_year": "2026-27",
+      "updated_at": "2026-08-10T09:00:00+00:00"
+    }
+  ]
+}

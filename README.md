@@ -14,12 +14,12 @@ Spec documents live in `docs/`.
 
 ## Status
 
-**Phase 5 of 6 (Admin UI) is complete.** An admin signs in against Supabase Auth, uploads a
-document through a dialog that names each processing step, watches it become searchable, and reads
-back what students asked: a dashboard of summary cards and a category chart, the full query history
-with the sources each answer cited, the unanswered queue grouped by question with a count, and FAQs
-derived from the questions asked most. Phase 6 writes the evaluation set and tunes the retrieval
-threshold.
+**All six phases are complete.** An admin signs in against Supabase Auth, uploads a document through
+a dialog that names each processing step, watches it become searchable, and reads back what students
+asked: a dashboard of summary cards and a category chart, the full query history with the sources
+each answer cited, the unanswered queue grouped by question with a count, and FAQs derived from the
+questions asked most. Phase 6 added a 30-question evaluation over a six-document corpus, pinned the
+`AGENTS.md` section 9 targets as a test, and audited the frontend against the accessibility rules.
 
 | Phase | Scope | State |
 |---|---|---|
@@ -28,7 +28,11 @@ threshold.
 | 3 | Retrieval and answering | done |
 | 4 | Student UI | done |
 | 5 | Admin UI | done |
-| 6 | Evaluation and tuning | not started |
+| 6 | Evaluation and tuning | done |
+
+Two known defects are open and measured rather than hidden — a category-classifier rule that sends
+one question to the wrong document, and one refusal whose cause is not yet explained. Both are named
+in the Phase 6 report and in `docs/DEMO.md` under "What not to demo".
 
 ## Prerequisites
 
@@ -49,8 +53,8 @@ backend/     FastAPI application
   app/schemas/     Pydantic request and response models
   tests/           all offline; generated file fixtures, no committed binaries
 supabase/migrations/   schema, applied in filename order
-docs/                  the spec documents
-eval/                  Phase 6
+docs/                  the spec documents, and DEMO.md -- the demo runbook
+eval/                  the evaluation: corpus, question set, harness, runner
 frontend/              React 19 + Vite + Tailwind
   src/pages/       the student chat, and the admin screens under pages/admin
   src/components/  the message list, source slips, chips, composer; admin tables,
@@ -257,6 +261,28 @@ curl -i -H "Authorization: Bearer nope" localhost:8000/admin/me   # 401 — malf
 
 A valid token from a user whose `profiles.role` is not `admin` gets `403`. If the JWKS endpoint is
 unreachable the gate returns `503` — it never falls through to allow.
+
+## Evaluation
+
+```bash
+python eval/run_eval.py                     # offline: no key, no database, no network
+python eval/run_eval.py --provider gemini   # the real embedder and the real model
+```
+
+Thirty questions — 20 answerable, 5 out-of-scope, 5 ambiguous — over a six-document corpus, one
+document per category. The offline run substitutes a lexical embedder and a model that cannot
+hallucinate, so what it measures is the pipeline's decisions rather than the model's prose; the
+Gemini run measures the model too. Both exit `0` when the `AGENTS.md` section 9 targets are met
+(answer rate ≥ 85%, citation correctness ≥ 95%, zero answers on out-of-scope questions) and `1` when
+one is missed, and `backend/tests/test_eval_targets.py` asserts that exit code so the targets cannot
+regress quietly.
+
+The corpus is committed as text, so any answer in the report can be checked by hand. `eval/README.md`
+documents what each run measures, what it does not, and why the two providers' thresholds are not
+interchangeable.
+
+`docs/DEMO.md` is the demo runbook: pre-flight checks, a ten-minute script, the two questions not to
+ask, and what to do when the model provider is having a bad day.
 
 ## Database migrations
 

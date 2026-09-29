@@ -1,0 +1,230 @@
+{
+  "version": 1,
+  "notes": [
+    "The evaluation set from AGENTS.md section 5 step 6: 20 answerable, 5 out-of-scope, 5 ambiguous.",
+    "Every answerable question's fact is present in eval/corpus, and `expected_terms` is text that appears ONLY in the document that holds it. That is what makes the citation check meaningful: a citation to the right document but the wrong section fails it.",
+    "`expected_terms` is checked against the cleaned text -- wrapped lines joined, table rows labelled -- not the raw file, and `test_eval_targets.py` asserts each term occurs in exactly one document. Two terms had to be widened to satisfy it: `three working days` is in both the Academic Regulations and the General Notices, and `200 rupees` is inside the Examination Handbook's `1,200 rupees` as well as the General Notices' replacement charge.",
+    "`expected_section` is a substring of the heading breadcrumb the chunker builds, so a citation is checked for pointing at the right part of the right document.",
+    "The out-of-scope questions are about things no document in the corpus mentions. `zero answers on out-of-scope questions` (AGENTS.md section 9) is the hard target and is measured over these five alone.",
+    "The ambiguous questions use the vocabulary of the corpus but ask something it does not answer -- a waiver, a refund, a sports quota. The honest outcome is a fallback, and the failure this catches is answering them from an unrelated passage."
+  ],
+  "questions": [
+    {
+      "id": "a01",
+      "kind": "answerable",
+      "question": "What is the late fee if I pay the examination fee after the due date?",
+      "expected_document": "Examination Handbook 2026-27",
+      "expected_section": "Late payment",
+      "expected_terms": ["250 rupees"]
+    },
+    {
+      "id": "a02",
+      "kind": "answerable",
+      "question": "When are hall tickets released?",
+      "expected_document": "Examination Handbook 2026-27",
+      "expected_section": "Hall tickets",
+      "expected_terms": ["20 December 2026"]
+    },
+    {
+      "id": "a03",
+      "kind": "answerable",
+      "question": "How much is the revaluation fee for an answer sheet?",
+      "expected_document": "Examination Handbook 2026-27",
+      "expected_section": "Revaluation",
+      "expected_terms": ["500 rupees per answer sheet"]
+    },
+    {
+      "id": "a04",
+      "kind": "answerable",
+      "question": "What is the fee for a supplementary examination?",
+      "expected_document": "Examination Handbook 2026-27",
+      "expected_section": "Supplementary examinations",
+      "expected_terms": ["400 rupees per paper"]
+    },
+    {
+      "id": "a05",
+      "kind": "answerable",
+      "question": "What marks do I need in higher secondary to get admission?",
+      "expected_document": "Admission Brochure 2026",
+      "expected_section": "Eligibility",
+      "expected_terms": ["50 percent"]
+    },
+    {
+      "id": "a06",
+      "kind": "answerable",
+      "question": "When is the entrance test held?",
+      "expected_document": "Admission Brochure 2026",
+      "expected_section": "Entrance test",
+      "expected_terms": ["18 June 2026"]
+    },
+    {
+      "id": "a07",
+      "kind": "answerable",
+      "question": "Which documents do I need to submit for admission?",
+      "expected_document": "Admission Brochure 2026",
+      "expected_section": "Documents required",
+      "expected_terms": ["Transfer certificate"]
+    },
+    {
+      "id": "a08",
+      "kind": "answerable",
+      "question": "What is the annual tuition fee for a postgraduate programme?",
+      "expected_document": "Admission Brochure 2026",
+      "expected_section": "Fee structure",
+      "expected_terms": ["30,000 rupees"]
+    },
+    {
+      "id": "a09",
+      "kind": "answerable",
+      "question": "When does course registration close?",
+      "expected_document": "Academic Regulations",
+      "expected_section": "Course registration",
+      "expected_terms": ["20 August 2026"]
+    },
+    {
+      "id": "a10",
+      "kind": "answerable",
+      "question": "What is the minimum attendance required for the end-semester examination?",
+      "expected_document": "Academic Regulations",
+      "expected_section": "Attendance",
+      "expected_terms": ["75 percent"]
+    },
+    {
+      "id": "a11",
+      "kind": "answerable",
+      "question": "How long does a bonafide certificate take?",
+      "expected_document": "Academic Regulations",
+      "expected_section": "Bonafide certificate",
+      "expected_terms": ["after three working days"]
+    },
+    {
+      "id": "a12",
+      "kind": "answerable",
+      "question": "How much does a transcript cost?",
+      "expected_document": "Academic Regulations",
+      "expected_section": "Transcripts and marksheets",
+      "expected_terms": ["1,000 rupees"]
+    },
+    {
+      "id": "a13",
+      "kind": "answerable",
+      "question": "Who is the head of the Computer Science department?",
+      "expected_document": "Campus Directory",
+      "expected_section": "Departments and offices",
+      "expected_terms": ["Meera Iyer"]
+    },
+    {
+      "id": "a14",
+      "kind": "answerable",
+      "question": "What are the library timings on weekdays?",
+      "expected_document": "Campus Directory",
+      "expected_section": "Library",
+      "expected_terms": ["08:00 to 20:00"]
+    },
+    {
+      "id": "a15",
+      "kind": "answerable",
+      "question": "What time do the hostel gates close?",
+      "expected_document": "Campus Directory",
+      "expected_section": "Hostel",
+      "expected_terms": ["22:30"]
+    },
+    {
+      "id": "a16",
+      "kind": "answerable",
+      "question": "When is annual day?",
+      "expected_document": "Events Calendar 2026-27",
+      "expected_section": "Annual day",
+      "expected_terms": ["20 February 2027"]
+    },
+    {
+      "id": "a17",
+      "kind": "answerable",
+      "question": "When is the cultural fest held?",
+      "expected_document": "Events Calendar 2026-27",
+      "expected_section": "Cultural fest",
+      "expected_terms": ["14 to 16 September 2026"]
+    },
+    {
+      "id": "a18",
+      "kind": "answerable",
+      "question": "By when must the fitness declaration for the sports meet be submitted?",
+      "expected_document": "Events Calendar 2026-27",
+      "expected_section": "Sports meet",
+      "expected_terms": ["25 October 2026"]
+    },
+    {
+      "id": "a19",
+      "kind": "answerable",
+      "question": "What is the college address?",
+      "expected_document": "General Notices",
+      "expected_section": "College address and timings",
+      "expected_terms": ["14 College Road"]
+    },
+    {
+      "id": "a20",
+      "kind": "answerable",
+      "question": "What does a replacement identity card cost?",
+      "expected_document": "General Notices",
+      "expected_section": "Identity cards",
+      "expected_terms": ["on payment of 200 rupees"]
+    },
+
+    {
+      "id": "x01",
+      "kind": "out_of_scope",
+      "question": "How do I apply for a passport?"
+    },
+    {
+      "id": "x02",
+      "kind": "out_of_scope",
+      "question": "What is the weather forecast for tomorrow?"
+    },
+    {
+      "id": "x03",
+      "kind": "out_of_scope",
+      "question": "Can you recommend a good restaurant near the campus?"
+    },
+    {
+      "id": "x04",
+      "kind": "out_of_scope",
+      "question": "How do I fix a cracked laptop screen?"
+    },
+    {
+      "id": "x05",
+      "kind": "out_of_scope",
+      "question": "Who won the inter-university football championship last year?"
+    },
+
+    {
+      "id": "m01",
+      "kind": "ambiguous",
+      "question": "Is the late fee waived if I was hospitalised?",
+      "related_document": "Examination Handbook 2026-27"
+    },
+    {
+      "id": "m02",
+      "kind": "ambiguous",
+      "question": "How many seats are reserved under the sports quota?",
+      "related_document": "Admission Brochure 2026"
+    },
+    {
+      "id": "m03",
+      "kind": "ambiguous",
+      "question": "Can I get a refund of the examination fee if I withdraw?",
+      "related_document": "Examination Handbook 2026-27"
+    },
+    {
+      "id": "m04",
+      "kind": "ambiguous",
+      "question": "What is the hostel room rent per semester?",
+      "related_document": "Campus Directory"
+    },
+    {
+      "id": "m05",
+      "kind": "ambiguous",
+      "question": "When is the next convocation ceremony?",
+      "related_document": "Events Calendar 2026-27"
+    }
+  ]
+}
