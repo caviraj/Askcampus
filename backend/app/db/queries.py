@@ -7,6 +7,7 @@ directly, so the query surface stays narrow and typed.
 from __future__ import annotations
 
 import math
+from datetime import datetime
 from typing import Any
 from uuid import UUID
 
@@ -394,6 +395,192 @@ async def insert_feedback(query_id: UUID, session_id: UUID, *, helpful: bool) ->
 
 
 # ---------------------------------------------------------------------------
+# Admin reads
+#
+# PostgREST has no GROUP BY, so the grouped admin views (the unanswered queue,
+# the FAQ list, the category chart) fetch a bounded window of rows and are
+# grouped by `app/services/history.py`. A listing that needs a genuine total
+# uses `count="exact"` instead, which is a head request and costs no rows.
+#
+# The columns are spelled out for the same reason `_DOCUMENT_COLUMNS` is: a
+# later migration adding a large column must not silently start shipping it into
+# a list the admin UI polled.
+# ---------------------------------------------------------------------------
+
+_QUERY_COLUMNS = (
+    "id,session_id,question,normalized_hash,category,answer,answered,"
+    "top_score,latency_ms,created_at"
+)
+_QUERY_SOURCE_COLUMNS = "query_id,rank,score,document_id,document_title,page_number,section_heading"
+_UNANSWERED_COLUMNS = (
+    "id,query_id,normalized_hash,question,category,status,resolved_by_document,created_at"
+)
+
+
+async def count_queries(
+    *,
+    since: datetime | None = None,
+    until: datetime | None = None,
+    answered: bool | None = None,
+) -> int:
+    """How many queries match, without fetching any of them.
+
+    `head=True` asks PostgREST for the count and no rows, so this stays cheap
+    however long the history gets. It is what makes the summary cards exact even
+    though the chart beside them is grouped from a bounded window.
+    """
+    query = get_db_client().table("queries").select("id", count="exact", head=True)
+    if since is not None:
+        query = query.gte("created_at", _isoformat(since))
+    if until is not None:
+        query = query.lt("created_at", _isoformat(until))
+    if answered is not None:
+        query = query.eq("answered", answered)
+    response = await query.execute()
+    return int(getattr(response, "count", 0) or 0)
+
+
+async def list_queries(
+    *,
+    limit: int,
+    offset: int,
+    answered: bool | None = None,
+    category: str | None = None,
+) -> tuple[list[dict[str, Any]], int]:
+    """A page of query history, newest first, with the total before the range."""
+    query = get_db_client().table("queries").select(_QUERY_COLUMNS, count="exact")
+    if answered is not None:
+        query = query.eq("answered", answered)
+    if category is not None:
+        query = query.eq("category", category)
+    response = await (
+        query.order("created_at", desc=True).range(offset, offset + limit - 1).execute()
+    )
+    items = getattr(response, "data", None) or []
+    return items, int(getattr(response, "count", 0) or 0)
+
+
+async def list_query_rows(
+    *,
+    since: datetime | None = None,
+    until: datetime | None = None,
+    answered: bool | None = None,
+    limit: int,
+) -> list[dict[str, Any]]:
+    """Rows for a view that has to be grouped, newest first, bounded by `limit`.
+
+    The bound is not paging: grouping a page would count the questions that
+    happened to land on it. So the caller gets a prefix of the window and is
+    expected to say so when it is full -- see `AdminHistoryService`.
+    """
+    query = get_db_client().table("queries").select(_QUERY_COLUMNS)
+    if since is not None:
+        query = query.gte("created_at", _isoformat(since))
+    if until is not None:
+        query = query.lt("created_at", _isoformat(until))
+    if answered is not None:
+        query = query.eq("answered", answered)
+    response = await query.order("created_at", desc=True).limit(limit).execute()
+    return getattr(response, "data", None) or []
+
+
+async def fetch_sources_for_queries(query_ids: list[UUID]) -> list[dict[str, Any]]:
+    """The citations recorded against a set of queries."""
+    if not query_ids:
+        return []
+    response = await (
+        get_db_client()
+        .table("query_sources")
+        .select(_QUERY_SOURCE_COLUMNS)
+        .in_("query_id", [str(query_id) for query_id in query_ids])
+        .order("rank")
+        .execute()
+    )
+    return getattr(response, "data", None) or []
+
+
+async def fetch_feedback_for_queries(query_ids: list[UUID]) -> list[dict[str, Any]]:
+    """The ratings recorded against a set of queries. Absent means unrated."""
+    if not query_ids:
+        return []
+    response = await (
+        get_db_client()
+        .table("feedback")
+        .select("query_id,helpful")
+        .in_("query_id", [str(query_id) for query_id in query_ids])
+        .execute()
+    )
+    return getattr(response, "data", None) or []
+
+
+async def list_unanswered(
+    *,
+    status: str | None = None,
+    limit: int,
+) -> list[dict[str, Any]]:
+    """Unanswered rows, newest first, bounded by `limit`.
+
+    Ordered by `created_at desc` rather than by count, because the count does
+    not exist until the rows are grouped. The preview on the dashboard therefore
+    shows the most recent groups, which is also the order an admin works in.
+    """
+    query = get_db_client().table("unanswered_queries").select(_UNANSWERED_COLUMNS)
+    if status is not None:
+        query = query.eq("status", status)
+    response = await query.order("created_at", desc=True).limit(limit).execute()
+    return getattr(response, "data", None) or []
+
+
+async def update_unanswered_group(
+    normalized_hash: str,
+    *,
+    status: str,
+    resolved_by_document: UUID | None,
+) -> list[dict[str, Any]]:
+    """Apply a status to every row in one hash group, returning the updated rows.
+
+    The whole group moves, not one row: the admin UI shows one row per hash, so
+    a PATCH that resolved a single occurrence would leave the row they just
+    resolved still sitting in the queue on the next page load.
+    """
+    response = await (
+        get_db_client()
+        .table("unanswered_queries")
+        .update(
+            {
+                "status": status,
+                "resolved_by_document": (
+                    str(resolved_by_document) if resolved_by_document is not None else None
+                ),
+            }
+        )
+        .eq("normalized_hash", normalized_hash)
+        .select(_UNANSWERED_COLUMNS)
+        .execute()
+    )
+    return getattr(response, "data", None) or []
+
+
+async def fetch_document_titles(document_ids: list[UUID]) -> list[dict[str, Any]]:
+    """Titles for the documents a resolved queue entry points at.
+
+    Deliberately not filtered by `is_active` or `status`: this answers "which
+    document fixed it", and a document deactivated since is still the one that
+    did. Filtering here would blank the link on a resolved row for no reason.
+    """
+    if not document_ids:
+        return []
+    response = await (
+        get_db_client()
+        .table("documents")
+        .select("id,title")
+        .in_("id", [str(document_id) for document_id in document_ids])
+        .execute()
+    )
+    return getattr(response, "data", None) or []
+
+
+# ---------------------------------------------------------------------------
 # Embedding cache
 # ---------------------------------------------------------------------------
 
@@ -509,6 +696,18 @@ def _format_vector(vector: list[float]) -> str:
     a query vector silently changes what it retrieves.
     """
     return "[" + ",".join(repr(value) for value in vector) + "]"
+
+
+def _isoformat(value: datetime) -> str:
+    """A timestamp as PostgREST compares it.
+
+    A naive datetime is refused rather than assumed to be UTC: `created_at` is
+    `timestamptz`, so a naive bound would be interpreted in the server's zone and
+    silently shift the window by hours.
+    """
+    if value.tzinfo is None:
+        raise ValueError("a query window bound must be timezone-aware")
+    return value.isoformat()
 
 
 def _batched(items: list[str], size: int) -> list[list[str]]:

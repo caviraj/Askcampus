@@ -627,3 +627,212 @@ class InMemoryQueryLogRepository:
 
 def _as_uuid(value: Any) -> UUID:
     return value if isinstance(value, UUID) else UUID(str(value))
+
+
+def _utcnow() -> dt.datetime:
+    return dt.datetime.now(dt.UTC)
+
+
+def _timestamp(value: Any) -> dt.datetime:
+    """A row's created_at as a datetime, whichever shape it was seeded with."""
+    if isinstance(value, dt.datetime):
+        return value if value.tzinfo is not None else value.replace(tzinfo=dt.UTC)
+    return dt.datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+
+
+class InMemoryHistoryRepository:
+    """HistoryRepository over rows, with the filters the real queries apply.
+
+    The filters are reproduced rather than ignored, because the admin screens
+    are mostly filters: a fake that answered every question with every row would
+    leave `answered=false`, `status=open` and the reporting window untestable --
+    which is to say it would leave the three screens that matter untestable.
+
+    Ordering is reproduced too (`created_at desc`), because the unanswered
+    queue's grouping reads the newest wording from the first row it sees.
+    """
+
+    def __init__(self) -> None:
+        self.query_rows: list[dict[str, Any]] = []
+        self.source_rows: list[dict[str, Any]] = []
+        self.feedback_rows: list[dict[str, Any]] = []
+        self.unanswered_rows: list[dict[str, Any]] = []
+        self.documents: dict[UUID, str] = {}
+        self.updates: list[dict[str, Any]] = []
+
+    # -- seeding ------------------------------------------------------------
+
+    def seed_document(
+        self, title: str = "Seeded document", *, document_id: UUID | None = None
+    ) -> UUID:
+        identifier = document_id or uuid4()
+        self.documents[identifier] = title
+        return identifier
+
+    def seed_query(
+        self,
+        *,
+        question: str = "When are marks published?",
+        normalized_hash: str | None = None,
+        category: str | None = "examinations",
+        answered: bool = True,
+        created_at: dt.datetime | None = None,
+        source_count: int = 0,
+        helpful: bool | None = None,
+    ) -> UUID:
+        """Insert a history row, with optional citations and a rating."""
+        query_id = uuid4()
+        digest = normalized_hash or hashlib.sha256(question.encode()).hexdigest()
+        self.query_rows.append(
+            {
+                "id": query_id,
+                "session_id": uuid4(),
+                "question": question,
+                "normalized_hash": digest,
+                "category": category,
+                "answer": (
+                    "An answer." if answered else "This is not in the college documents I have."
+                ),
+                "answered": answered,
+                "top_score": 0.81 if answered else 0.31,
+                "latency_ms": 900,
+                "created_at": created_at or _utcnow(),
+            }
+        )
+        for rank in range(1, source_count + 1):
+            self.source_rows.append(
+                {
+                    "query_id": query_id,
+                    "rank": rank,
+                    "score": 0.8 - rank / 100,
+                    "document_id": uuid4(),
+                    "document_title": f"Document {rank}",
+                    "page_number": rank,
+                    "section_heading": None,
+                }
+            )
+        if helpful is not None:
+            self.feedback_rows.append({"query_id": query_id, "helpful": helpful})
+        return query_id
+
+    def seed_unanswered(
+        self,
+        *,
+        question: str = "What is the hostel mess menu?",
+        normalized_hash: str | None = None,
+        category: str | None = None,
+        status: str = "open",
+        created_at: dt.datetime | None = None,
+        resolved_by_document: UUID | None = None,
+    ) -> str:
+        digest = normalized_hash or hashlib.sha256(question.encode()).hexdigest()
+        self.unanswered_rows.append(
+            {
+                "id": uuid4(),
+                "query_id": uuid4(),
+                "normalized_hash": digest,
+                "question": question,
+                "category": category,
+                "status": status,
+                "resolved_by_document": resolved_by_document,
+                "created_at": created_at or _utcnow(),
+            }
+        )
+        return digest
+
+    # -- HistoryRepository --------------------------------------------------
+
+    async def count_queries(
+        self,
+        *,
+        since: dt.datetime | None = None,
+        until: dt.datetime | None = None,
+        answered: bool | None = None,
+    ) -> int:
+        return len(self._query_window(since=since, until=until, answered=answered))
+
+    async def list_queries(
+        self,
+        *,
+        limit: int,
+        offset: int,
+        answered: bool | None = None,
+        category: str | None = None,
+    ) -> tuple[list[dict[str, Any]], int]:
+        rows = self._query_window(answered=answered, category=category)
+        return [dict(row) for row in rows[offset : offset + limit]], len(rows)
+
+    async def list_query_rows(
+        self,
+        *,
+        since: dt.datetime | None = None,
+        until: dt.datetime | None = None,
+        answered: bool | None = None,
+        limit: int,
+    ) -> list[dict[str, Any]]:
+        rows = self._query_window(since=since, until=until, answered=answered)
+        return [dict(row) for row in rows[:limit]]
+
+    async def fetch_sources(self, query_ids: list[UUID]) -> list[dict[str, Any]]:
+        wanted = {str(query_id) for query_id in query_ids}
+        return [dict(row) for row in self.source_rows if str(row["query_id"]) in wanted]
+
+    async def fetch_feedback(self, query_ids: list[UUID]) -> list[dict[str, Any]]:
+        wanted = {str(query_id) for query_id in query_ids}
+        return [dict(row) for row in self.feedback_rows if str(row["query_id"]) in wanted]
+
+    async def list_unanswered(
+        self, *, status: str | None = None, limit: int
+    ) -> list[dict[str, Any]]:
+        rows = [row for row in self.unanswered_rows if status is None or row["status"] == status]
+        rows.sort(key=lambda row: _timestamp(row["created_at"]), reverse=True)
+        return [dict(row) for row in rows[:limit]]
+
+    async def update_unanswered_group(
+        self, normalized_hash: str, *, status: str, resolved_by_document: UUID | None
+    ) -> list[dict[str, Any]]:
+        self.updates.append(
+            {
+                "normalized_hash": normalized_hash,
+                "status": status,
+                "resolved_by_document": resolved_by_document,
+            }
+        )
+        updated = []
+        for row in self.unanswered_rows:
+            if row["normalized_hash"] != normalized_hash:
+                continue
+            row["status"] = status
+            row["resolved_by_document"] = resolved_by_document
+            updated.append(dict(row))
+        return updated
+
+    async def fetch_document_titles(self, document_ids: list[UUID]) -> list[dict[str, Any]]:
+        return [
+            {"id": document_id, "title": self.documents[document_id]}
+            for document_id in document_ids
+            if document_id in self.documents
+        ]
+
+    def _query_window(
+        self,
+        *,
+        since: dt.datetime | None = None,
+        until: dt.datetime | None = None,
+        answered: bool | None = None,
+        category: str | None = None,
+    ) -> list[dict[str, Any]]:
+        rows = []
+        for row in self.query_rows:
+            stamp = _timestamp(row["created_at"])
+            if since is not None and stamp < since:
+                continue
+            if until is not None and stamp >= until:
+                continue
+            if answered is not None and row["answered"] is not answered:
+                continue
+            if category is not None and row["category"] != category:
+                continue
+            rows.append(row)
+        rows.sort(key=lambda row: _timestamp(row["created_at"]), reverse=True)
+        return rows

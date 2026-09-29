@@ -119,3 +119,159 @@ export interface ErrorView {
   cooldownSeconds: number | null;
   canRetry: boolean;
 }
+
+// ---------------------------------------------------------------------------
+// Admin. Mirrored from `backend/app/schemas/documents.py` and `admin.py`.
+// ---------------------------------------------------------------------------
+
+export type DocumentStatus = "uploaded" | "processing" | "ready" | "failed";
+
+/** A document row. Every field comes from the database; none is inferred. */
+export interface AdminDocument {
+  id: string;
+  title: string;
+  category: Category;
+  academic_year: string | null;
+  department: string | null;
+  file_type: string;
+  original_filename: string | null;
+  file_size_bytes: number | null;
+  status: DocumentStatus;
+  is_active: boolean;
+  error_message: string | null;
+  page_count: number | null;
+  chunk_count: number | null;
+  extracted_chars: number | null;
+  low_text_yield: boolean;
+  text_preview: string | null;
+  created_at: string | null;
+  updated_at: string | null;
+}
+
+export interface DocumentListResponse {
+  items: AdminDocument[];
+  total: number;
+  limit: number;
+  offset: number;
+}
+
+/** One chunk cited by a logged query. Titles are the copy taken at write time,
+ *  so a source still names its document after the document is deleted. */
+export interface QuerySource {
+  rank: number;
+  score: number | null;
+  document_id: string | null;
+  document_title: string | null;
+  page_number: number | null;
+  section_heading: string | null;
+}
+
+export interface AdminQuery {
+  id: string;
+  session_id: string;
+  question: string;
+  category: Category | null;
+  answer: string | null;
+  answered: boolean;
+  top_score: number | null;
+  latency_ms: number | null;
+  created_at: string | null;
+  sources: QuerySource[];
+  /** Tri-state. `null` is "nobody rated it", which is not "not helpful". */
+  helpful: boolean | null;
+}
+
+export interface QueryListResponse {
+  items: AdminQuery[];
+  total: number;
+  limit: number;
+  offset: number;
+}
+
+export type UnansweredStatus = "open" | "resolved";
+
+export interface UnansweredGroup {
+  normalized_hash: string;
+  question: string;
+  category: Category | null;
+  count: number;
+  first_asked_at: string | null;
+  last_asked_at: string | null;
+  status: UnansweredStatus;
+  resolved_by_document: string | null;
+  resolved_by_document_title: string | null;
+}
+
+export interface UnansweredListResponse {
+  items: UnansweredGroup[];
+  total: number;
+  limit: number;
+  offset: number;
+  /** True when the grouping window filled, so `count` and `total` are lower
+   *  bounds. Surfaced in the UI rather than hidden. */
+  truncated: boolean;
+}
+
+export interface FaqItem {
+  normalized_hash: string;
+  question: string;
+  count: number;
+  last_asked_at: string | null;
+}
+
+export interface FaqGroup {
+  /** `null` is the classifier declining to place the question, which is not a
+   *  category -- `general` is. */
+  category: Category | null;
+  total: number;
+  items: FaqItem[];
+}
+
+export interface FaqListResponse {
+  groups: FaqGroup[];
+  truncated: boolean;
+}
+
+export interface StatCard {
+  value: number;
+  previous: number;
+}
+
+export interface TopCategoryCard {
+  category: Category | null;
+  count: number;
+  previous_category: Category | null;
+  previous_count: number;
+}
+
+export interface CategoryCount {
+  category: Category | null;
+  count: number;
+}
+
+export interface StatsResponse {
+  window_days: number;
+  /** Applies to `categories` and `unanswered_preview`, which are grouped from a
+   *  bounded window. The three count cards are exact either way. */
+  truncated: boolean;
+  questions: StatCard;
+  answered: StatCard;
+  unanswered: StatCard;
+  top_category: TopCategoryCard;
+  categories: CategoryCount[];
+  unanswered_preview: UnansweredGroup[];
+}
+
+/** The admin session, as Supabase Auth returns it. */
+export interface AdminSession {
+  accessToken: string;
+  refreshToken: string;
+  /** Epoch ms. Derived from `expires_in` at sign-in, not parsed from the JWT. */
+  expiresAt: number;
+  email: string;
+}
+
+export interface AdminIdentity {
+  id: string;
+  full_name: string | null;
+}

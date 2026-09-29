@@ -23,6 +23,7 @@ import pytest  # noqa: E402
 from cryptography.hazmat.primitives.asymmetric import ec  # noqa: E402
 from fastapi import FastAPI  # noqa: E402
 
+from app.api.admin import get_history_repository  # noqa: E402
 from app.api.auth_deps import get_profile_repository, get_token_verifier  # noqa: E402
 from app.api.chat import (  # noqa: E402
     get_answering_service,
@@ -53,6 +54,7 @@ from tests.fakes import (  # noqa: E402
     InMemoryDocumentRepository,
     InMemoryEmbeddingCache,
     InMemoryFileStorage,
+    InMemoryHistoryRepository,
     InMemoryProfileRepository,
     InMemoryQueryLogRepository,
     StubJWKClient,
@@ -124,6 +126,11 @@ def query_log_repository() -> InMemoryQueryLogRepository:
 
 
 @pytest.fixture
+def history_repository() -> InMemoryHistoryRepository:
+    return InMemoryHistoryRepository()
+
+
+@pytest.fixture
 def llm_provider() -> FakeLLMProvider:
     """No scripted answers by default.
 
@@ -144,6 +151,7 @@ def app(
     embedding_provider: FakeEmbeddingProvider,
     chunk_repository: InMemoryChunkRepository,
     query_log_repository: InMemoryQueryLogRepository,
+    history_repository: InMemoryHistoryRepository,
     llm_provider: FakeLLMProvider,
 ) -> FastAPI:
     application = create_app(settings)
@@ -176,6 +184,9 @@ def app(
         llm=llm_provider,
         query_log=query_log_repository,
     )
+    # The admin reads go through the service, not straight to the fake, so the
+    # grouping, the window split and the truncation flag are all exercised.
+    application.dependency_overrides[get_history_repository] = lambda: history_repository
     return application
 
 

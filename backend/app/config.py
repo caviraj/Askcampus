@@ -139,6 +139,22 @@ class Settings(BaseSettings):
     document_list_default_limit: int = Field(default=20, gt=0)
     document_list_max_limit: int = Field(default=100, gt=0)
 
+    # Query history, the unanswered queue and the FAQ view.
+    admin_list_default_limit: int = Field(default=20, gt=0)
+    admin_list_max_limit: int = Field(default=100, gt=0)
+    stats_window_days: int = Field(default=7, gt=0)
+    faq_max_items_per_category: int = Field(default=5, gt=0)
+    # How many unanswered groups the dashboard previews. DESIGN_SYSTEM.md
+    # section 8 asks for a preview, not the queue: the queue has its own screen.
+    stats_preview_limit: int = Field(default=5, gt=0)
+    # PostgREST exposes one statement per request and has no GROUP BY, so the
+    # grouped views (the unanswered queue, the FAQ list, the category chart) are
+    # aggregated in Python over a bounded window of rows. This is that bound. A
+    # response that hits it sets `truncated`, so a partial count is reported as
+    # partial rather than presented as a total. A paging or `count` query would
+    # not help -- the grouping is what needs the rows.
+    admin_aggregate_row_limit: int = Field(default=5000, gt=0)
+
     # Never ["*"]: a wildcard origin would let any site call the API.
     cors_origins: CommaSeparated = ["http://localhost:5173"]
 

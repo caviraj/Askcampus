@@ -6,11 +6,21 @@
  * contact that no row supplies. Recorded in the Phase 4 report rather than
  * filled in with a plausible-looking mailto.
  */
-export function AppHeader() {
+import type { ReactNode } from "react";
+
+interface AppHeaderProps {
+  /** The right-hand slot. Empty on the student chat, where the spec's
+   *  `[Ask staff]` action is deliberately not built; the admin shell puts the
+   *  signed-in name and a sign-out button here. */
+  right?: ReactNode;
+}
+
+export function AppHeader({ right }: AppHeaderProps) {
   return (
     <header className="sticky top-0 z-20 h-14 border-b border-rule bg-surface">
-      <div className="mx-auto flex h-full max-w-[1100px] items-center px-4">
+      <div className="mx-auto flex h-full max-w-[1100px] items-center justify-between px-4">
         <span className="font-serif text-section-title font-semibold text-ink">CampusAsk</span>
+        {right}
       </div>
     </header>
   );

@@ -14,11 +14,12 @@ Spec documents live in `docs/`.
 
 ## Status
 
-**Phase 4 of 6 (Student UI) is complete.** A student opens the chat page, asks a question in plain
-language, and reads an answer drawn only from retrieved document text with a **source slip** beside
-it — expandable to the passage it came from, with the supporting sentence marked. Questions the
-documents do not answer come back as an honest fallback naming the office that handles them, and are
-logged for admins. Phase 5 builds the admin UI and Phase 6 the evaluation set.
+**Phase 5 of 6 (Admin UI) is complete.** An admin signs in against Supabase Auth, uploads a
+document through a dialog that names each processing step, watches it become searchable, and reads
+back what students asked: a dashboard of summary cards and a category chart, the full query history
+with the sources each answer cited, the unanswered queue grouped by question with a count, and FAQs
+derived from the questions asked most. Phase 6 writes the evaluation set and tunes the retrieval
+threshold.
 
 | Phase | Scope | State |
 |---|---|---|
@@ -26,7 +27,7 @@ logged for admins. Phase 5 builds the admin UI and Phase 6 the evaluation set.
 | 2 | Ingestion: upload, extraction, chunking, embeddings | done |
 | 3 | Retrieval and answering | done |
 | 4 | Student UI | done |
-| 5 | Admin UI | not started |
+| 5 | Admin UI | done |
 | 6 | Evaluation and tuning | not started |
 
 ## Prerequisites
@@ -50,11 +51,14 @@ backend/     FastAPI application
 supabase/migrations/   schema, applied in filename order
 docs/                  the spec documents
 eval/                  Phase 6
-frontend/              React 19 + Vite + Tailwind student chat
-  src/pages/       the chat page
-  src/components/  the message list, source slips, chips, composer
-  src/hooks/       the chat reducer, media query, textarea autogrow
-  src/lib/         the API client, types, error mapping, highlighting
+frontend/              React 19 + Vite + Tailwind
+  src/pages/       the student chat, and the admin screens under pages/admin
+  src/components/  the message list, source slips, chips, composer; admin tables,
+                   badges, cards and the upload dialog under components/admin
+  src/hooks/       the chat reducer, media query, textarea autogrow, admin session,
+                   async loading and polling
+  src/lib/         the API client, types, error mapping, highlighting, hash router,
+                   stored admin session
   src/test/        the Vitest harness
 ```
 
@@ -312,13 +316,13 @@ The student UI reads **one** variable, documented in `frontend/.env.example`:
 VITE_API_URL=http://localhost:8000
 ```
 
-It is the only thing the chat needs. The Supabase pair below belongs to Phase 5's admin login: a
-student-facing chat has no Supabase client and no auth, so it must not be handed a key it has no use
-for. The names are fixed ahead of that phase anyway:
+It is the only thing the chat needs. The pair below is for the admin sign-in: a student-facing chat
+has no Supabase client and no auth, so it is never handed a key it has no use for, and the sign-in
+screen says so plainly when they are absent.
 
 ```
 VITE_SUPABASE_URL=https://your-project-ref.supabase.co
-VITE_SUPABASE_ANON_KEY=<anon-key>          # Phase 5
+VITE_SUPABASE_ANON_KEY=<anon-key>
 ```
 
 Only the anon key would be exposed to the browser. It grants nothing directly — every table has row

@@ -69,3 +69,60 @@ export function AlertIcon(props: IconProps) {
     </svg>
   );
 }
+
+// ---------------------------------------------------------------------------
+// Admin. Section 8's four status badges need a clock, a loop, a check and an
+// alert; the check and the alert are above.
+// ---------------------------------------------------------------------------
+
+/** "Uploaded" -- accepted, not yet being worked on. */
+export function ClockIcon(props: IconProps) {
+  return (
+    <svg {...BASE} {...props}>
+      <circle cx="8" cy="8" r="6.25" />
+      <path d="M8 4.5V8l2.5 1.5" />
+    </svg>
+  );
+}
+
+/** "Processing". Not a spinner: section 8 forbids one in the loading state and
+ *  a badge that spins in a table row would be a second, unasked-for animation. */
+export function LoopIcon(props: IconProps) {
+  return (
+    <svg {...BASE} {...props}>
+      <path d="M13.5 8a5.5 5.5 0 1 1-1.9-4.16" />
+      <path d="M13.5 2v3.25h-3.25" />
+    </svg>
+  );
+}
+
+export function UploadIcon(props: IconProps) {
+  return (
+    <svg {...BASE} {...props}>
+      <path d="M8 11V2.75" />
+      <path d="M4.75 6 8 2.75 11.25 6" />
+      <path d="M2.75 11v2.25h10.5V11" />
+    </svg>
+  );
+}
+
+export function TrashIcon(props: IconProps) {
+  return (
+    <svg {...BASE} {...props}>
+      <path d="M2.75 4.25h10.5" />
+      <path d="M6.5 4.25V3h3v1.25" />
+      <path d="M4.25 4.25 5 13.25h6l.75-9" />
+    </svg>
+  );
+}
+
+/** A sort direction, for a sortable column header. Points at the order the rows
+ *  would take, not at where the arrow "is". */
+export function SortIcon(props: IconProps) {
+  return (
+    <svg {...BASE} {...props}>
+      <path d="M8 3v10" />
+      <path d="M4.75 9.75 8 13l3.25-3.25" />
+    </svg>
+  );
+}
