@@ -1,0 +1,21 @@
+# Runtime dependencies for the CampusAsk backend.
+# Source of truth for versions. Keep this file minimal; add per phase.
+
+fastapi==0.141.1
+uvicorn[standard]==0.54.0
+pydantic==2.13.5
+pydantic-settings==2.15.0
+
+# Supabase data layer. create_async_client() gives genuinely async table()/rpc().
+supabase==2.31.0
+
+# JWT verification. PyJWT is already a transitive dependency of supabase-auth,
+# declared directly because we import it. [crypto] is mandatory: without it
+# PyJWT cannot verify ES256 tokens at all.
+PyJWT[crypto]==2.15.1
+
+# httpx is pinned <0.29 by supabase-py's own constraint. Tests import it directly.
+httpx==0.28.1
+
+# Multipart uploads (Phase 2) — declared now so the pin is settled.
+python-multipart==0.0.32
