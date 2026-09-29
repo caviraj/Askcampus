@@ -116,3 +116,41 @@ def test_cors_origins_default_is_local_dev_not_a_wildcard() -> None:
     origins = _settings().cors_origins
     assert "*" not in origins
     assert origins == ["http://localhost:5173"]
+
+
+def test_the_chat_defaults_match_the_spec() -> None:
+    settings = _settings()
+    # ARCHITECTURE.md section 5.2 fixes the history window at four turns.
+    assert settings.chat_history_max_turns == 4
+    assert settings.chat_question_max_chars == 1000
+    assert settings.chat_history_max_chars == 1000
+    # ARCHITECTURE.md section 9: "for example 20 per minute".
+    assert settings.chat_rate_limit_per_minute == 20
+    assert settings.chat_rate_limit_enabled is True
+
+
+def test_the_two_embedding_task_types_are_the_asymmetric_pair() -> None:
+    """A question embedded as a document retrieves worse against the very chunks
+    it should match, and does so silently -- no error, just lower recall."""
+    settings = _settings()
+    assert settings.embedding_task_type == "RETRIEVAL_DOCUMENT"
+    assert settings.query_embedding_task_type == "RETRIEVAL_QUERY"
+    assert settings.embedding_task_type != settings.query_embedding_task_type
+
+
+def test_a_zero_length_question_bound_fails_fast() -> None:
+    """A limit of zero would refuse every question the schema accepted."""
+    with pytest.raises(ValidationError):
+        _settings(chat_question_max_chars=0)
+
+
+def test_a_history_window_above_the_ceiling_fails_fast() -> None:
+    with pytest.raises(ValidationError):
+        _settings(chat_history_max_turns=21)
+
+
+def test_a_non_positive_rate_limit_fails_fast() -> None:
+    """`gt=0` on the field is what enforces this; there is no second guard, so
+    this test is also what pins that the field kept its constraint."""
+    with pytest.raises(ValidationError):
+        _settings(chat_rate_limit_per_minute=0)

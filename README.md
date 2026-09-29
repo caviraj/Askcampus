@@ -14,20 +14,16 @@ Spec documents live in `docs/`.
 
 ## Status
 
-**Phase 2 of 6 (Ingestion) is complete.** What exists: everything from Phase 1, plus the path from an
-uploaded file to searchable text — Storage, per-page extraction, cleaning, heading-aware chunking,
-batched embeddings with a cache, and the status transitions that carry a document from `uploaded` to
-`ready`. An admin can upload a college PDF, poll its status, reprocess it, replace its file or delete
-it.
-
-Nothing retrieves or answers yet — `chunks` is populated but nothing reads it, and there is no
-question endpoint until Phase 3.
+**Phase 3 of 6 (Retrieval and answering) is complete.** A student can `POST /chat` with a question and
+get an answer drawn only from retrieved document text, with a citation naming the document, page and
+section it came from — or an honest fallback, logged for admins. There is still no UI: Phases 4 and 5
+build the student and admin frontends, and Phase 6 writes the evaluation set.
 
 | Phase | Scope | State |
 |---|---|---|
 | 1 | Scaffold, config, migrations, admin auth gate | done |
 | 2 | Ingestion: upload, extraction, chunking, embeddings | done |
-| 3 | Retrieval and answering | not started |
+| 3 | Retrieval and answering | done |
 | 4 | Student UI | not started |
 | 5 | Admin UI | not started |
 | 6 | Evaluation and tuning | not started |
@@ -44,7 +40,8 @@ question endpoint until Phase 3.
 ```
 backend/     FastAPI application
   app/api/         route handlers — validate input, call a service, shape the response
-  app/services/    business logic: extraction, cleaning, chunking, embedding, ingestion
+  app/services/    business logic: extraction, cleaning, chunking, embedding, ingestion,
+                   retrieval, classification, answering, fallback, query logging
   app/providers/   LLM and embedding interfaces, and the Gemini implementation
   app/db/          Supabase client and data functions
   app/schemas/     Pydantic request and response models
@@ -138,6 +135,59 @@ All under `/admin/documents`, all requiring an admin token.
 poll is in the response body. `replace` is separate from delete-and-re-upload because keeping the id
 is the point — query history and existing citations name this document.
 
+## Asking a question
+
+```
+POST /chat {session_id, question, history?, category?}
+  → {query_id, answered, category, answer, citations[]}
+```
+
+No token: `AGENTS.md` section 12 puts student login out of scope for v1, so a student is a random
+`session_id` and nothing else. The id is also what entitles a caller to rate an answer.
+
+| Method | Path | Result |
+|---|---|---|
+| POST | `/chat` | `200` — answered or not; a fallback is not an error |
+| POST | `/chat/feedback` | `204`; `404` when the query is not this session's |
+| GET | `/categories` | `200` — the six categories plus All, each with starter questions |
+
+The pipeline, in order:
+
+1. **Normalise and hash** the raw question, so repeats group in the admin history.
+2. **Pick a category** — the chip the student tapped, else the classifier's guess, else none.
+   Classifying is word-boundary rules over the question; it is confident only when exactly one
+   category matches. Unclassified is `NULL`, never `general`, because `general` is a real category and
+   conflating the two would filter every general-filed document out of retrieval.
+3. **Retrieve** with `hybrid_search` (RRF over a vector list and a keyword list, both capped) and
+   hydrate the returned ids from `chunks` and `documents`, re-checking `is_active` and `status =
+   'ready'` so a document deactivated between the two queries can never be cited.
+4. **Decide.** `similarity` is `1 - cosine distance` and is `NULL` for a chunk that only the keyword
+   list found, so the decision uses the maximum over every returned row. Below `SIMILARITY_THRESHOLD`
+   the question never reaches the model — there is nothing to put in the prompt.
+5. **Answer** from a prompt containing the six retrieval rules, the question, and one delimited block
+   per chunk. The model returns `{"answerable", "answer", "used_sources"}` as JSON, validated by
+   Pydantic and re-checked against the labels that were actually supplied.
+6. **Validate citations.** A label that was not supplied, or an answer claiming to be answerable with
+   no sources, is rejected and the model is asked once more with a corrective note appended after the
+   source blocks. Two unusable responses fall back.
+7. **Log** `queries`, `query_sources` and — for a fallback — `unanswered_queries`, in one transaction.
+
+Three properties worth stating plainly:
+
+- **The prompt contains only retrieved chunks.** Not conversation history, not the previous answer.
+  History builds the *search* text, which is what lets a follow-up like "and the late fee?" retrieve
+  sensibly; the stored and hashed question is the raw one.
+- **Every citation field comes from a database row.** The model returns labels and nothing else — it
+  is never asked for a title, a page or a date, so it has no opportunity to invent one.
+- **A fallback writes both rows.** No exception, including when the model returned `answerable:
+  false`. If the log write itself fails the answer still returns: a database that refuses the log
+  must not also take away the answer the student already has.
+
+`/chat` is rate limited to `CHAT_RATE_LIMIT_PER_MINUTE` per minute, counted separately per client IP
+and per session, so one tab cannot spend everyone's allowance. Over either limit it returns `429` with
+`Retry-After`. The limiter is in-process, which is the same single-instance assumption the startup
+reaper documents.
+
 ## Verify
 
 ```bash
@@ -157,6 +207,11 @@ document routes are wired to an in-memory repository, an in-memory bucket and a 
 provider, so no test can reach a real service by forgetting to override something. The ingestion
 pipeline itself runs for real during those tests: only the database, Storage and the model are
 fakes, which is what makes the status assertions mean anything.
+
+The chat tests work the same way: only the two providers, the chunk repository and the query log are
+fakes, so the real `RetrievalService` and `AnsweringService` run behind `POST /chat`. The fallback
+tests assert on the fake model's *call count* rather than the answer text, so a plausible-sounding
+answer cannot pass a test that was meant to prove the model was never asked.
 
 File fixtures are generated in memory rather than committed as binaries — no opaque blobs in git, and
 the builder doubles as a readable statement of what each format looks like.
@@ -188,20 +243,22 @@ bare Postgres is a no-op for that one file rather than an error.
 `test_migrations_integration.py` checks the applied schema against a real Postgres — row level
 security on every table, `hybrid_search` returning cosine similarity and ranking correctly, the
 triggers, the ingestion columns, the private `documents` bucket, the `embedding_cache` grants, the
-unique chunk index, and the single-transaction property of `replace_document_chunks` (it calls the
-function with an embedding that cannot cast, then asserts the previous chunks are still there). It is
-skipped unless you opt in:
+unique chunk index, the single-transaction property of `replace_document_chunks` (it calls the
+function with an embedding that cannot cast, then asserts the previous chunks are still there), and
+the same property for `log_query` plus the ownership check in `record_feedback`. It is skipped unless
+you opt in:
 
 ```bash
 pip install "psycopg[binary]"
 RUN_DB_TESTS=1 TEST_DATABASE_URL=postgresql://postgres:postgres@localhost:5432/postgres pytest -q -m integration
 ```
 
-`test_ingestion_e2e.py` runs a generated PDF through real Storage and real Gemini. It needs a live
-project and a real key, and every document it creates is deleted again:
+`test_ingestion_e2e.py` and `test_chat_e2e.py` run a generated PDF through real Storage and real
+Gemini, then ask a question it answers and one it does not. They need a live project and a real key,
+and every document they create is deleted again:
 
 ```bash
-RUN_LIVE_TESTS=1 pytest -q tests/test_ingestion_e2e.py
+RUN_LIVE_TESTS=1 pytest -q tests/test_ingestion_e2e.py tests/test_chat_e2e.py
 ```
 
 After creating your first admin user in Supabase Auth, promote them once:

@@ -12,8 +12,12 @@ from fastapi.middleware.cors import CORSMiddleware
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from app import __version__
-from app.api import admin, documents, health
-from app.api.errors import api_error_handler, validation_error_handler
+from app.api import admin, chat, documents, health
+from app.api.errors import (
+    api_error_handler,
+    provider_error_handler,
+    validation_error_handler,
+)
 from app.config import Settings, get_settings
 from app.db.client import close_db_client, init_db_client
 from app.db.queries import (
@@ -21,8 +25,10 @@ from app.db.queries import (
     reap_orphaned_processing_documents,
 )
 from app.logging_config import configure_logging
+from app.providers.errors import ProviderError
 from app.providers.gemini import GeminiProvider
 from app.services.auth import TokenVerifier
+from app.services.ratelimit import SlidingWindowRateLimiter
 
 logger = logging.getLogger(__name__)
 
@@ -56,6 +62,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     # HTTP connection pool, and doing that on every upload would throw it away
     # each time. No network call happens here.
     app.state.embedding_provider = GeminiProvider(settings)
+    # One instance serves both protocols, but the two names say which one a call
+    # site means -- an embedding failure and a generation failure are handled
+    # differently, so the difference is worth spelling out where it is read.
+    app.state.llm_provider = app.state.embedding_provider
+    # Per app rather than module-level, so every test gets counters of its own.
+    app.state.rate_limiter = SlidingWindowRateLimiter(limit=settings.chat_rate_limit_per_minute)
 
     # allow_credentials stays False: the access token travels in an
     # Authorization header, not a cookie, so credentialed CORS would buy nothing
@@ -70,10 +82,16 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     app.add_exception_handler(StarletteHTTPException, api_error_handler)
     app.add_exception_handler(RequestValidationError, validation_error_handler)
+    # The provider SDK is the one dependency that can be up or down independently
+    # of this process, and /chat is the first route that awaits it inline rather
+    # than inside a background task -- where the failure would otherwise reach the
+    # student as an unhandled 500.
+    app.add_exception_handler(ProviderError, provider_error_handler)
 
     app.include_router(health.router)
     app.include_router(admin.router)
     app.include_router(documents.router)
+    app.include_router(chat.router)
 
     logger.info(
         "CampusAsk API %s starting in %s mode; CORS origins: %s",

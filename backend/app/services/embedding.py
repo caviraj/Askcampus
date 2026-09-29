@@ -20,7 +20,8 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from typing import Protocol
+from collections.abc import Awaitable, Callable
+from typing import Protocol, TypeVar
 
 from app.config import Settings
 from app.db import queries
@@ -29,6 +30,9 @@ from app.providers.errors import ProviderError
 from app.services.hashing import sha256_hex
 
 logger = logging.getLogger(__name__)
+
+# The provider call's return type: a batch of vectors, or one vector.
+_ResultT = TypeVar("_ResultT")
 
 
 class EmbeddingCache(Protocol):
@@ -119,6 +123,19 @@ class EmbeddingService:
 
         return [resolved[key] for key in hashes]
 
+    async def embed_query(self, text: str) -> list[float]:
+        """Embed one search question.
+
+        Deliberately never touches the cache. That cache exists so re-ingesting a
+        document re-embeds nothing it has already seen; questions are almost all
+        unique, so keying them by content would grow the table by a row per
+        question asked and save a call only on an exact repeat.
+
+        Retried on the same transient failures as ingestion: a question that hit
+        a 429 is worth one more attempt, not an immediate fallback.
+        """
+        return await self._retry(lambda: self._provider.embed_query(text), batch_size=1)
+
     async def _load(self, content_hashes: list[str]) -> dict[str, list[float]]:
         if not content_hashes or not self._settings.embedding_cache_enabled:
             return {}
@@ -148,10 +165,21 @@ class EmbeddingService:
 
     async def _embed_with_retry(self, texts: list[str]) -> list[list[float]]:
         """Embed one batch, retrying only failures that could plausibly pass."""
+        return await self._retry(lambda: self._provider.embed(texts), batch_size=len(texts))
+
+    async def _retry(self, call: Callable[[], Awaitable[_ResultT]], *, batch_size: int) -> _ResultT:
+        """Run one provider call, retrying only failures that could plausibly pass.
+
+        Shared between the batch and the single-question path so the two cannot
+        drift into different retry policies. The question path is not a batch of
+        one: the provider's two embedding task types are asymmetric, and a
+        question embedded as a document is a worse match for the very chunks it
+        should retrieve.
+        """
         attempt = 0
         while True:
             try:
-                return await self._provider.embed(texts)
+                return await call()
             except ProviderError as exc:
                 if not exc.transient or attempt >= self._settings.embedding_max_retries:
                     raise
@@ -160,11 +188,11 @@ class EmbeddingService:
                 # worse.
                 delay = self._settings.retry_backoff_seconds * (2**attempt)
                 attempt += 1
-                # The batch size and the error, never the text itself: AGENTS.md
+                # The size and the error, never the text itself: AGENTS.md
                 # section 7 forbids logging document content.
                 logger.warning(
-                    "Embedding a batch of %d failed, retrying in %.1fs (%d of %d retries used): %s",
-                    len(texts),
+                    "Embedding %d text(s) failed, retrying in %.1fs (%d of %d retries used): %s",
+                    batch_size,
                     delay,
                     attempt,
                     self._settings.embedding_max_retries,

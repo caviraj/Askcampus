@@ -7,12 +7,27 @@ next action, never apologize.
 
 from __future__ import annotations
 
+import logging
+
 from fastapi import HTTPException, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
+from app.providers.errors import ProviderError
 from app.schemas.common import ErrorResponse
+
+logger = logging.getLogger(__name__)
+
+# The model behind /chat is the one dependency that can be unavailable while this
+# process is fine, and the student's next action is the same either way: send the
+# question again. DESIGN_SYSTEM.md section 9 has no row for it, so this follows
+# the shape of its network-error copy rather than inventing a new voice -- state
+# what happened, then the next action, and do not blame the student's connection
+# for a fault on this side.
+PROVIDER_UNAVAILABLE_MESSAGE = (
+    "This answer could not be loaded. Send the question again in a moment."
+)
 
 # Used for exceptions we did not raise ourselves, e.g. Starlette's 404 for an
 # unknown path or 405 for a wrong method.
@@ -64,5 +79,27 @@ async def validation_error_handler(request: Request, exc: RequestValidationError
         content=ErrorResponse(
             detail="The request was not valid. Check the fields and try again.",
             code="validation_error",
+        ).model_dump(),
+    )
+
+
+async def provider_error_handler(request: Request, exc: ProviderError) -> JSONResponse:
+    """A model or embedding call that could not be completed.
+
+    503 for both transient and permanent failures. The distinction changes what
+    this service would do next, but not what the student can do about it, and
+    telling an unauthenticated caller which one it was describes the internals of
+    the deployment for no benefit to them.
+
+    Logged with the exception's own message and never the prompt: AGENTS.md
+    section 7 forbids logging document text, and a prompt is document text with a
+    question attached.
+    """
+    logger.warning("A provider call failed on %s: %s", request.url.path, exc)
+    return JSONResponse(
+        status_code=503,
+        content=ErrorResponse(
+            detail=PROVIDER_UNAVAILABLE_MESSAGE,
+            code=_FALLBACK_CODES[503],
         ).model_dump(),
     )

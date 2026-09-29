@@ -55,6 +55,21 @@ class GeminiProvider:
         return self._dimensions
 
     async def embed(self, texts: list[str]) -> list[list[float]]:
+        """Embed a batch of document text, for storage."""
+        return await self._embed(texts, task_type=self._settings.embedding_task_type)
+
+    async def embed_query(self, text: str) -> list[float]:
+        """Embed one question, for searching.
+
+        A separate method rather than a task_type argument on `embed`, so a
+        caller cannot pass the wrong one: the two sides of the asymmetric pair
+        are chosen by which method is called, not by which constant the caller
+        remembered.
+        """
+        vectors = await self._embed([text], task_type=self._settings.query_embedding_task_type)
+        return vectors[0]
+
+    async def _embed(self, texts: list[str], *, task_type: str) -> list[list[float]]:
         """Embed a batch, returning one vector per input, in input order."""
         if not texts:
             return []
@@ -70,7 +85,7 @@ class GeminiProvider:
                 # ambiguity.
                 contents=[types.Content(parts=[types.Part(text=text)]) for text in texts],
                 config=types.EmbedContentConfig(
-                    task_type=self._settings.embedding_task_type,
+                    task_type=task_type,
                     # Without this the model returns its native 3072 floats and the
                     # insert into vector(768) fails with a cast error that never
                     # mentions dimensions.
@@ -102,10 +117,7 @@ class GeminiProvider:
         return vectors
 
     async def generate_json(self, prompt: str, schema: type[ResponseT]) -> ResponseT:
-        """Generate a response constrained to `schema`, already validated.
-
-        Unused until Phase 3, which is why it takes no document arguments yet.
-        """
+        """Generate a response constrained to `schema`, already validated."""
         try:
             response = await self._client.aio.models.generate_content(
                 model=self._settings.llm_model,

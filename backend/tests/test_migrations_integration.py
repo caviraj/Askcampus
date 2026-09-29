@@ -537,3 +537,262 @@ def test_replace_document_chunks_is_not_callable_by_a_client_role(connection: An
     assert anon is False
     assert authenticated is False
     assert service_role is True
+
+
+# ---------------------------------------------------------------------------
+# Phase 3: query logging
+# ---------------------------------------------------------------------------
+
+
+def _source(rank: int, title: str) -> dict[str, Any]:
+    """One `query_sources` entry, shaped exactly as the backend serialises it."""
+    return {
+        "rank": rank,
+        "chunk_id": str(uuid.uuid4()),
+        "score": 0.031,
+        "document_id": str(uuid.uuid4()),
+        "document_title": title,
+        "page_number": 3,
+        "section_heading": "Fees",
+    }
+
+
+def _record_feedback(connection: Any, query_id: Any, session_id: Any, helpful: bool) -> bool:
+    with connection.cursor() as cur:
+        cur.execute("select public.record_feedback(%s, %s, %s)", (query_id, session_id, helpful))
+        return cur.fetchone()[0]
+
+
+def _log_query(connection: Any, **overrides: Any) -> Any:
+    """Call `log_query` with a valid payload, overridable field by field."""
+    values: dict[str, Any] = {
+        "p_query_id": uuid.uuid4(),
+        "p_session_id": uuid.uuid4(),
+        "p_question": "When is the examination fee due?",
+        "p_normalized_hash": "a" * 64,
+        "p_category": "examinations",
+        "p_answer": "The fee is due on 12 December.",
+        "p_answered": True,
+        "p_top_score": 0.91,
+        "p_latency_ms": 842,
+        "p_sources": json.dumps(
+            [
+                {
+                    "rank": 1,
+                    "chunk_id": str(uuid.uuid4()),
+                    "score": 0.031,
+                    "document_id": str(uuid.uuid4()),
+                    "document_title": "Examination handbook",
+                    "page_number": 3,
+                    "section_heading": "Fees",
+                }
+            ]
+        ),
+        "p_unanswered": False,
+    }
+    values.update(overrides)
+    with connection.cursor() as cur:
+        cur.execute(
+            "select public.log_query(%s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s)",
+            tuple(values.values()),
+        )
+        return cur.fetchone()[0]
+
+
+def _rows(connection: Any, sql: str, params: tuple[Any, ...]) -> list[tuple[Any, ...]]:
+    with connection.cursor() as cur:
+        cur.execute(sql, params)
+        return cur.fetchall()
+
+
+def test_log_query_writes_the_query_and_its_sources(connection: Any) -> None:
+    """AGENTS.md section 6.6. One call, one transaction -- and the id it returns
+    is the one the backend minted, so the response does not depend on the write
+    having succeeded."""
+    query_id = _log_query(connection, p_sources=json.dumps([_source(1, "S1"), _source(2, "S2")]))
+
+    rows = _rows(
+        connection,
+        "select session_id, question, normalized_hash, category, answer, answered, "
+        "top_score, latency_ms from public.queries where id = %s",
+        (query_id,),
+    )
+
+    assert len(rows) == 1
+    assert rows[0][3] == "examinations"
+    assert rows[0][5] is True
+    assert rows[0][7] == 842
+    ranks = _rows(
+        connection, "select rank from public.query_sources where query_id = %s", (query_id,)
+    )
+    assert sorted(row[0] for row in ranks) == [1, 2]
+
+
+def test_a_null_category_is_stored_as_null(connection: Any) -> None:
+    """`NULL` is "could not classify", which is not the same as the real
+    `general` category -- conflating them would filter every general-filed
+    document out of retrieval."""
+    query_id = _log_query(connection, p_category=None)
+
+    assert _rows(connection, "select category from public.queries where id = %s", (query_id,)) == [
+        (None,)
+    ]
+
+
+def test_an_unanswered_question_writes_both_rows(connection: Any) -> None:
+    """The second row is the one the whole admin queue exists to collect."""
+    query_id = _log_query(
+        connection,
+        p_answered=False,
+        p_answer="I could not find this in the college documents.",
+        p_unanswered=True,
+        p_sources=json.dumps([]),
+        p_top_score=None,
+    )
+
+    assert len(_rows(connection, "select id from public.queries where id = %s", (query_id,))) == 1
+    unanswered = _rows(
+        connection,
+        "select question, normalized_hash, category, status, resolved_by_document "
+        "from public.unanswered_queries where query_id = %s",
+        (query_id,),
+    )
+    assert len(unanswered) == 1
+    assert unanswered[0][0] == "When is the examination fee due?"
+    assert unanswered[0][3] == "open"
+    assert unanswered[0][4] is None
+
+
+def test_an_answered_question_writes_no_unanswered_row(connection: Any) -> None:
+    query_id = _log_query(connection)
+
+    assert (
+        _rows(
+            connection,
+            "select query_id from public.unanswered_queries where query_id = %s",
+            (query_id,),
+        )
+        == []
+    )
+
+
+def test_a_bad_source_entry_rolls_back_the_whole_log(connection: Any) -> None:
+    """The assertion that proves the single-transaction rule, and the reason this
+    is a function rather than three PostgREST inserts.
+
+    The `queries` row is inserted *before* the sources, and the second entry's
+    score cannot cast to real. Without one transaction the history would keep a
+    question whose cited sources are missing -- exactly the state migration
+    0007's header describes. With one, the whole call vanishes.
+    """
+    query_id = uuid.uuid4()
+
+    with pytest.raises(psycopg.errors.Error):
+        _log_query(
+            connection,
+            p_query_id=query_id,
+            p_unanswered=True,
+            p_sources=json.dumps([_source(1, "S1"), {**_source(2, "S2"), "score": "not-a-number"}]),
+        )
+
+    assert _rows(connection, "select id from public.queries where id = %s", (query_id,)) == []
+    assert (
+        _rows(
+            connection,
+            "select query_id from public.unanswered_queries where query_id = %s",
+            (query_id,),
+        )
+        == []
+    )
+
+
+def test_a_chunk_with_no_page_stores_a_null_page(connection: Any) -> None:
+    """DOCX and TXT have no pages, and AGENTS.md section 6.5 forbids a fabricated
+    one -- so the JSON null has to survive the cast, not become 0."""
+    query_id = _log_query(
+        connection,
+        p_sources=json.dumps(
+            [
+                {
+                    "rank": 1,
+                    "chunk_id": str(uuid.uuid4()),
+                    "score": 0.031,
+                    "document_id": str(uuid.uuid4()),
+                    "document_title": "Student handbook",
+                    "page_number": None,
+                    "section_heading": None,
+                }
+            ]
+        ),
+    )
+
+    rows = _rows(
+        connection,
+        "select page_number, section_heading from public.query_sources where query_id = %s",
+        (query_id,),
+    )
+    assert rows == [(None, None)]
+
+
+def test_feedback_is_recorded_for_the_owning_session(connection: Any) -> None:
+    session_id = uuid.uuid4()
+    query_id = _log_query(connection, p_session_id=session_id)
+
+    assert _record_feedback(connection, query_id, session_id, True) is True
+    assert _rows(
+        connection, "select helpful from public.feedback where query_id = %s", (query_id,)
+    ) == [(True,)]
+
+
+def test_a_foreign_session_cannot_rate_a_query_and_writes_nothing(connection: Any) -> None:
+    """The ownership predicate is inside the insert, so there is no window
+    between the check and the write. `false` rather than an error, because the
+    route reports it as a 404 and the two cases must be indistinguishable."""
+    query_id = _log_query(connection, p_session_id=uuid.uuid4())
+
+    assert _record_feedback(connection, query_id, uuid.uuid4(), True) is False
+    assert (
+        _rows(connection, "select helpful from public.feedback where query_id = %s", (query_id,))
+        == []
+    )
+
+
+def test_an_unknown_query_cannot_be_rated(connection: Any) -> None:
+    assert _record_feedback(connection, uuid.uuid4(), uuid.uuid4(), True) is False
+
+
+def test_re_rating_replaces_rather_than_accumulating(connection: Any) -> None:
+    """`feedback.query_id` is the primary key, so a changed mind is one row."""
+    session_id = uuid.uuid4()
+    query_id = _log_query(connection, p_session_id=session_id)
+
+    _record_feedback(connection, query_id, session_id, True)
+    _record_feedback(connection, query_id, session_id, False)
+
+    rows = _rows(connection, "select helpful from public.feedback where query_id = %s", (query_id,))
+    assert rows == [(False,)]
+
+
+@pytest.mark.parametrize(
+    "signature",
+    [
+        "public.log_query(uuid, uuid, text, text, text, text, boolean, real, int, jsonb, boolean)",
+        "public.record_feedback(uuid, uuid, boolean)",
+    ],
+)
+def test_the_logging_functions_are_not_callable_by_a_client_role(
+    connection: Any, signature: str
+) -> None:
+    """`record_feedback` is reached from an unauthenticated route, so a client
+    role holding EXECUTE on it would let anyone rate anyone's answer."""
+    with connection.cursor() as cur:
+        cur.execute(
+            f"select has_function_privilege('anon', '{signature}', 'execute'), "
+            f"has_function_privilege('authenticated', '{signature}', 'execute'), "
+            f"has_function_privilege('service_role', '{signature}', 'execute')"
+        )
+        anon, authenticated, service_role = cur.fetchone()
+
+    assert anon is False
+    assert authenticated is False
+    assert service_role is True

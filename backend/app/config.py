@@ -83,14 +83,26 @@ class Settings(BaseSettings):
     embedding_dimensions: int = 768
 
     # Asymmetric retrieval: documents are embedded as RETRIEVAL_DOCUMENT and
-    # questions as RETRIEVAL_QUERY (Phase 3). Using the wrong one on either side
-    # degrades recall silently, with no error to catch.
+    # questions as RETRIEVAL_QUERY. Using the wrong one on either side degrades
+    # recall silently, with no error to catch -- which is why they are two
+    # settings rather than one that a caller could pass wrongly.
     embedding_task_type: str = "RETRIEVAL_DOCUMENT"
+    query_embedding_task_type: str = "RETRIEVAL_QUERY"
 
     # Retrieval tuning. Tuned against the eval set in Phase 6.
     similarity_threshold: float = Field(default=0.55, ge=-1.0, le=1.0)
     top_k: int = Field(default=5, ge=1, le=20)
     max_upload_mb: int = Field(default=20, gt=0)
+
+    # Chat. ARCHITECTURE.md section 5.2 fixes the history window at four turns.
+    chat_history_max_turns: int = Field(default=4, ge=0, le=20)
+    chat_question_max_chars: int = Field(default=1000, gt=0)
+    chat_history_max_chars: int = Field(default=1000, gt=0)
+    # ARCHITECTURE.md section 9 suggests "for example 20 per minute". Counted per
+    # IP and per session, in the process -- a single-instance assumption, the same
+    # one the startup reaper documents.
+    chat_rate_limit_enabled: bool = True
+    chat_rate_limit_per_minute: int = Field(default=20, gt=0)
 
     # Chunking. Target, max and overlap come from ARCHITECTURE.md section 8.
     chunk_target_tokens: int = Field(default=300, gt=0)

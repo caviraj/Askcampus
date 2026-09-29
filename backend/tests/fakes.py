@@ -23,6 +23,7 @@ from jwt.algorithms import ECAlgorithm
 
 from app.providers.errors import ProviderError
 from app.schemas.auth import Profile
+from app.services.retrieval import RetrievedChunk
 from app.services.storage import StorageError
 
 TEST_SUPABASE_URL = "https://test-project.supabase.co"
@@ -369,7 +370,9 @@ class FakeEmbeddingProvider:
     """Deterministic vectors derived from the text, in requested order.
 
     Records each batch's size, which is how the batching test proves
-    embed_batch_size is honoured rather than assuming it.
+    embed_batch_size is honoured rather than assuming it. Question embeddings are
+    recorded separately, under `queries`: a query is one text and no batch, and
+    counting it as a batch would break the batching assertions.
     """
 
     def __init__(
@@ -382,6 +385,7 @@ class FakeEmbeddingProvider:
         self._dimensions = dimensions
         self.batch_sizes: list[int] = []
         self.texts: list[str] = []
+        self.queries: list[str] = []
         self.transient_failures = transient_failures
         self.error = error
 
@@ -392,12 +396,20 @@ class FakeEmbeddingProvider:
     async def embed(self, texts: list[str]) -> list[list[float]]:
         self.batch_sizes.append(len(texts))
         self.texts.extend(texts)
+        self._maybe_fail()
+        return [fake_vector(text, self._dimensions) for text in texts]
+
+    async def embed_query(self, text: str) -> list[float]:
+        self.queries.append(text)
+        self._maybe_fail()
+        return fake_vector(text, self._dimensions)
+
+    def _maybe_fail(self) -> None:
         if self.error is not None:
             raise self.error
         if self.transient_failures > 0:
             self.transient_failures -= 1
             raise ProviderError("The provider is busy.", transient=True)
-        return [fake_vector(text, self._dimensions) for text in texts]
 
 
 def fake_vector(text: str, dimensions: int = 768) -> list[float]:
@@ -411,3 +423,207 @@ def fake_vector(text: str, dimensions: int = 768) -> list[float]:
     vector = (raw * repeats)[:dimensions]
     norm = math.sqrt(sum(value * value for value in vector))
     return [value / norm for value in vector]
+
+
+# ---------------------------------------------------------------------------
+# Phase 3: retrieval and answering
+# ---------------------------------------------------------------------------
+
+
+class FakeLLMProvider:
+    """Scripted answers, one per call, with every prompt recorded.
+
+    A queue rather than one fixed answer, because the behaviour worth testing is
+    what happens on the *second* call -- the one after a rejected response. A
+    provider that returned the same thing every time could not express that.
+
+    A queued item may be a dict, a ModelAnswer, or an exception to raise, so a
+    test can script a malformed response or a provider failure at an exact call.
+    """
+
+    def __init__(
+        self,
+        responses: list[Any] | None = None,
+        *,
+        error: ProviderError | None = None,
+    ) -> None:
+        self.responses: list[Any] = list(responses or [])
+        self.error = error
+        self.prompts: list[str] = []
+        self.schemas: list[type[Any]] = []
+
+    @property
+    def calls(self) -> int:
+        return len(self.prompts)
+
+    async def generate_json(self, prompt: str, schema: type[Any]) -> Any:
+        self.prompts.append(prompt)
+        self.schemas.append(schema)
+        if self.error is not None:
+            raise self.error
+        if not self.responses:
+            raise AssertionError("The fake LLM was asked for more answers than were scripted.")
+
+        response = self.responses.pop(0)
+        if isinstance(response, BaseException):
+            raise response
+        if isinstance(response, dict):
+            return schema.model_validate(response)
+        return response
+
+
+def answer_payload(
+    answer: str = "Registration closes on 12 December 2026.",
+    *,
+    sources: list[str] | None = None,
+    answerable: bool = True,
+) -> dict[str, Any]:
+    """A model response in the shape ARCHITECTURE.md section 6 fixes."""
+    return {
+        "answerable": answerable,
+        "answer": answer,
+        "used_sources": ["S1"] if sources is None else sources,
+    }
+
+
+class InMemoryChunkRepository:
+    """ChunkRepository over dicts, with a scripted ranking.
+
+    `search` returns the primed ranking narrowed to the requested category, which
+    is what `filter_category` does in the real function: the ranking itself is
+    global, and the filter selects from it. Recording the categories asked for is
+    what lets a test prove the unfiltered retry happened -- and prove it did not
+    when the filtered search was already good enough.
+
+    `hydrate` reproduces the real filter rather than trusting the ranking: a
+    chunk whose document is inactive or not ready is dropped, exactly as
+    `fetch_searchable_documents` drops it.
+    """
+
+    def __init__(self) -> None:
+        self.documents: dict[UUID, dict[str, Any]] = {}
+        self.chunks: dict[UUID, dict[str, Any]] = {}
+        self.ranking: list[dict[str, Any]] = []
+        self.searched: list[str | None] = []
+        self.match_counts: list[int] = []
+
+    def seed_document(self, **overrides: Any) -> UUID:
+        """Insert a searchable document and return its id."""
+        document_id: UUID = overrides.pop("id", uuid4())
+        row: dict[str, Any] = {
+            "id": document_id,
+            "title": "Seeded document",
+            "department": None,
+            "updated_at": "2026-09-10T09:00:00+00:00",
+            "category": "general",
+            "is_active": True,
+            "status": "ready",
+        }
+        row.update(overrides)
+        self.documents[document_id] = row
+        return document_id
+
+    def seed_chunk(self, document_id: UUID, **overrides: Any) -> UUID:
+        """Insert a chunk belonging to a seeded document."""
+        chunk_id: UUID = overrides.pop("id", uuid4())
+        row: dict[str, Any] = {
+            "id": chunk_id,
+            "document_id": document_id,
+            "content": "Seeded content.",
+            "page_number": 1,
+            "section_heading": None,
+        }
+        row.update(overrides)
+        self.chunks[chunk_id] = row
+        return chunk_id
+
+    def prime(self, ranked: list[tuple[UUID, float | None]]) -> None:
+        """Script what `search` finds, best first.
+
+        Each entry is (chunk_id, cosine similarity). The RRF score is derived
+        from the rank the way the real function derives it, so nothing in a test
+        depends on a number that was invented here.
+        """
+        self.ranking = [
+            {
+                "chunk_id": chunk_id,
+                "document_id": self.chunks[chunk_id]["document_id"],
+                "score": 1.0 / (60 + rank),
+                "similarity": similarity,
+            }
+            for rank, (chunk_id, similarity) in enumerate(ranked, start=1)
+        ]
+
+    async def search(
+        self, *, query_text: str, embedding: list[float], match_count: int, category: str | None
+    ) -> list[dict[str, Any]]:
+        self.searched.append(category)
+        self.match_counts.append(match_count)
+        narrowed = [
+            hit for hit in self.ranking if category is None or self._category_of(hit) == category
+        ]
+        return [dict(hit) for hit in narrowed[:match_count]]
+
+    def _category_of(self, hit: dict[str, Any]) -> Any:
+        return self.documents[_as_uuid(hit["document_id"])]["category"]
+
+    async def hydrate(self, hits: list[dict[str, Any]]) -> list[RetrievedChunk]:
+        hydrated: list[RetrievedChunk] = []
+        for hit in hits:
+            chunk = self.chunks.get(_as_uuid(hit["chunk_id"]))
+            document = self.documents.get(_as_uuid(hit["document_id"]))
+            if chunk is None or document is None:
+                continue
+            if not document["is_active"] or document["status"] != "ready":
+                continue
+            hydrated.append(
+                RetrievedChunk(
+                    chunk_id=chunk["id"],
+                    document_id=document["id"],
+                    score=float(hit["score"]),
+                    similarity=hit["similarity"],
+                    content=chunk["content"],
+                    page_number=chunk["page_number"],
+                    section_heading=chunk["section_heading"],
+                    document_title=document["title"],
+                    department=document["department"],
+                    document_updated_at=document["updated_at"],
+                )
+            )
+        return hydrated
+
+
+class InMemoryQueryLogRepository:
+    """QueryLogRepository over lists, with a failure hook.
+
+    Every call is kept rather than the last, because "the fallback wrote both
+    rows" is a statement about one call: `log_query` is handed `unanswered=True`
+    and the real function writes the `queries` row and the `unanswered_queries`
+    row in one transaction, so what a fake can record is the flag the transaction
+    was asked to act on.
+
+    `record_feedback` reproduces the ownership rule, including the upsert.
+    """
+
+    def __init__(self, *, error: Exception | None = None) -> None:
+        self.entries: list[dict[str, Any]] = []
+        self.feedback: list[dict[str, Any]] = []
+        self.sessions: dict[UUID, UUID] = {}
+        self.error = error
+
+    async def log_query(self, **kwargs: Any) -> None:
+        if self.error is not None:
+            raise self.error
+        self.entries.append(kwargs)
+        self.sessions[kwargs["query_id"]] = kwargs["session_id"]
+
+    async def record_feedback(self, *, query_id: UUID, session_id: UUID, helpful: bool) -> bool:
+        if self.sessions.get(query_id) != session_id:
+            return False
+        self.feedback = [row for row in self.feedback if row["query_id"] != query_id]
+        self.feedback.append({"query_id": query_id, "session_id": session_id, "helpful": helpful})
+        return True
+
+
+def _as_uuid(value: Any) -> UUID:
+    return value if isinstance(value, UUID) else UUID(str(value))

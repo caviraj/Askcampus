@@ -5,9 +5,11 @@ the migrations applied and a working Gemini key. Nothing here is faked: the byte
 go to Storage, the chunks go to Postgres through `replace_document_chunks`, and the
 embeddings come from Google.
 
-This is `AGENTS.md` section 9's integration test minus the question, which is
-Phase 3. The negative half of that requirement -- an out-of-scope question writing
-an `unanswered_queries` row -- needs retrieval, so it cannot exist yet.
+Phase 2's half of `AGENTS.md` section 9's integration test: the upload, the
+extraction, the embedding and the chunks. The question half -- asking something
+the file answers and asserting the answer and the citation, plus the negative
+case that must reach `unanswered_queries` -- needs retrieval, and lives in
+`test_chat_e2e.py`.
 
 To run it:
     set RUN_LIVE_TESTS=1

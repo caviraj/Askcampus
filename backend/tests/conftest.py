@@ -24,6 +24,11 @@ from cryptography.hazmat.primitives.asymmetric import ec  # noqa: E402
 from fastapi import FastAPI  # noqa: E402
 
 from app.api.auth_deps import get_profile_repository, get_token_verifier  # noqa: E402
+from app.api.chat import (  # noqa: E402
+    get_answering_service,
+    get_chunk_repository,
+    get_query_log_repository,
+)
 from app.api.documents import (  # noqa: E402
     get_document_repository,
     get_file_storage,
@@ -32,19 +37,24 @@ from app.api.documents import (  # noqa: E402
 from app.config import Settings  # noqa: E402
 from app.main import create_app  # noqa: E402
 from app.schemas.auth import Profile  # noqa: E402
+from app.services.answering import AnsweringService  # noqa: E402
 from app.services.auth import TokenVerifier  # noqa: E402
 from app.services.embedding import EmbeddingService  # noqa: E402
 from app.services.ingestion import IngestionService  # noqa: E402
+from app.services.retrieval import RetrievalService  # noqa: E402
 from tests.fakes import (  # noqa: E402
     TEST_AUDIENCE,
     TEST_ISSUER,
     TEST_KID,
     TEST_SUPABASE_URL,
     FakeEmbeddingProvider,
+    FakeLLMProvider,
+    InMemoryChunkRepository,
     InMemoryDocumentRepository,
     InMemoryEmbeddingCache,
     InMemoryFileStorage,
     InMemoryProfileRepository,
+    InMemoryQueryLogRepository,
     StubJWKClient,
     generate_keypair,
     jwks_for,
@@ -104,6 +114,27 @@ def embedding_provider() -> FakeEmbeddingProvider:
 
 
 @pytest.fixture
+def chunk_repository() -> InMemoryChunkRepository:
+    return InMemoryChunkRepository()
+
+
+@pytest.fixture
+def query_log_repository() -> InMemoryQueryLogRepository:
+    return InMemoryQueryLogRepository()
+
+
+@pytest.fixture
+def llm_provider() -> FakeLLMProvider:
+    """No scripted answers by default.
+
+    A test that reaches the model without saying what it should return gets an
+    AssertionError rather than a plausible-looking answer, so a path that was
+    meant to fall back before the model call cannot pass by accident.
+    """
+    return FakeLLMProvider()
+
+
+@pytest.fixture
 def app(
     settings: Settings,
     verifier: TokenVerifier,
@@ -111,6 +142,9 @@ def app(
     document_repository: InMemoryDocumentRepository,
     file_storage: InMemoryFileStorage,
     embedding_provider: FakeEmbeddingProvider,
+    chunk_repository: InMemoryChunkRepository,
+    query_log_repository: InMemoryQueryLogRepository,
+    llm_provider: FakeLLMProvider,
 ) -> FastAPI:
     application = create_app(settings)
     application.dependency_overrides[get_token_verifier] = lambda: verifier
@@ -126,6 +160,21 @@ def app(
         file_storage,
         EmbeddingService(embedding_provider, settings, InMemoryEmbeddingCache()),
         settings,
+    )
+    # The same choice for chat: the real RetrievalService and AnsweringService run
+    # behind the routes, with only the providers and the two repositories faked.
+    # Overriding the answering service wholesale would mean the citation rules,
+    # the fallback decision and the retry were never exercised through the API.
+    application.dependency_overrides[get_chunk_repository] = lambda: chunk_repository
+    application.dependency_overrides[get_query_log_repository] = lambda: query_log_repository
+    application.dependency_overrides[get_answering_service] = lambda: AnsweringService(
+        retrieval=RetrievalService(
+            EmbeddingService(embedding_provider, settings, InMemoryEmbeddingCache()),
+            chunk_repository,
+            settings,
+        ),
+        llm=llm_provider,
+        query_log=query_log_repository,
     )
     return application
 

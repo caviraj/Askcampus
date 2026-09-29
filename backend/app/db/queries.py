@@ -233,14 +233,164 @@ async def replace_document_chunks(
         )
         .execute()
     )
-    data = getattr(response, "data", None)
-    if isinstance(data, int):
-        return data
-    # PostgREST returns a scalar function's result bare in some versions and as a
-    # single-element list in others.
-    if isinstance(data, list) and data and isinstance(data[0], int):
-        return data[0]
-    return len(chunks)
+    data = _first_scalar(response)
+    # Falling back to the local count rather than raising: the chunks were written
+    # either way, and this number only feeds the document's own summary row.
+    return data if isinstance(data, int) else len(chunks)
+
+
+# ---------------------------------------------------------------------------
+# Retrieval
+# ---------------------------------------------------------------------------
+
+# The chunk columns a citation is built from. `documents.title` is not among them
+# because it is read from the document row, in the same second query that
+# re-applies the searchable predicate.
+_CHUNK_SEARCH_COLUMNS = "id,document_id,content,page_number,section_heading"
+_SEARCHABLE_DOCUMENT_COLUMNS = "id,title,department,updated_at"
+
+
+async def run_hybrid_search(
+    *,
+    query_text: str,
+    embedding: list[float],
+    match_count: int,
+    category: str | None,
+) -> list[dict[str, Any]]:
+    """Hybrid retrieval, returning `chunk_id, document_id, score, similarity`.
+
+    Returns ids and scores only -- the RPC is written to rank, not to join, so
+    the passages and titles a citation needs come from `fetch_searchable_chunks`
+    and `fetch_searchable_documents` next. Splitting them is what lets the second
+    step re-apply AGENTS.md section 6.12 as a plain filter.
+    """
+    response = await (
+        get_db_client()
+        .rpc(
+            "hybrid_search",
+            {
+                "query_text": query_text,
+                "query_embedding": _format_vector(embedding),
+                "match_count": match_count,
+                "filter_category": category,
+            },
+        )
+        .execute()
+    )
+    return getattr(response, "data", None) or []
+
+
+async def fetch_searchable_chunks(chunk_ids: list[UUID]) -> list[dict[str, Any]]:
+    """The passages behind a set of retrieval hits."""
+    if not chunk_ids:
+        return []
+    response = await (
+        get_db_client()
+        .table("chunks")
+        .select(_CHUNK_SEARCH_COLUMNS)
+        .in_("id", [str(chunk_id) for chunk_id in chunk_ids])
+        .execute()
+    )
+    return getattr(response, "data", None) or []
+
+
+async def fetch_searchable_documents(document_ids: list[UUID]) -> list[dict[str, Any]]:
+    """Documents that may still be cited: active, and finished processing.
+
+    `hybrid_search` already filters on both, and this repeats it deliberately.
+    The RPC and this query are separate requests, so a document deactivated in
+    between would otherwise be cited from the stale ranking -- AGENTS.md section
+    6.12 is a condition on what is searchable, and satisfying it once at the
+    start of a two-request read is not the same as satisfying it.
+    """
+    if not document_ids:
+        return []
+    response = await (
+        get_db_client()
+        .table("documents")
+        .select(_SEARCHABLE_DOCUMENT_COLUMNS)
+        .in_("id", [str(document_id) for document_id in document_ids])
+        .eq("is_active", True)
+        .eq("status", "ready")
+        .execute()
+    )
+    return getattr(response, "data", None) or []
+
+
+# ---------------------------------------------------------------------------
+# Query history
+# ---------------------------------------------------------------------------
+
+
+async def insert_query_log(
+    *,
+    query_id: UUID,
+    session_id: UUID,
+    question: str,
+    normalized_hash: str,
+    category: str | None,
+    answer: str,
+    answered: bool,
+    top_score: float | None,
+    latency_ms: int,
+    sources: list[dict[str, Any]],
+    unanswered: bool,
+) -> None:
+    """Write one question, its cited sources and, when unanswered, its queue row.
+
+    Goes through the `log_query` function for the reason migration 0007 gives:
+    AGENTS.md section 6 requires the fallback to write `queries` and
+    `unanswered_queries` together, and PostgREST exposes one statement per
+    request, so from here that is two round trips that can be interrupted between
+    them.
+
+    `query_id` is supplied by the caller rather than returned, so a failure here
+    costs the log entry and not the query id the student was already given.
+    """
+    await (
+        get_db_client()
+        .rpc(
+            "log_query",
+            {
+                "p_query_id": str(query_id),
+                "p_session_id": str(session_id),
+                "p_question": question,
+                "p_normalized_hash": normalized_hash,
+                "p_category": category,
+                "p_answer": answer,
+                "p_answered": answered,
+                "p_top_score": top_score,
+                "p_latency_ms": latency_ms,
+                "p_sources": sources,
+                "p_unanswered": unanswered,
+            },
+        )
+        .execute()
+    )
+
+
+async def insert_feedback(query_id: UUID, session_id: UUID, *, helpful: bool) -> bool:
+    """Record a rating, or report that this session may not give one.
+
+    False covers both "no such query" and "that query belongs to another
+    session". The function deliberately makes them indistinguishable, so the
+    endpoint cannot be used to probe for query ids.
+    """
+    response = await (
+        get_db_client()
+        .rpc(
+            "record_feedback",
+            {
+                "p_query_id": str(query_id),
+                "p_session_id": str(session_id),
+                "p_helpful": helpful,
+            },
+        )
+        .execute()
+    )
+    # Strict identity: anything other than a JSON true is a refusal, so an
+    # unexpected response shape rejects the rating instead of accepting it.
+    return _first_scalar(response) is True
 
 
 # ---------------------------------------------------------------------------
@@ -319,6 +469,19 @@ def _first_or_none(response: Any) -> dict[str, Any] | None:
     return rows[0] if rows else None
 
 
+def _first_scalar(response: Any) -> Any:
+    """The value a scalar-returning function produced.
+
+    PostgREST returns it bare in some server versions and wrapped in a
+    single-element list in others, and the client library does not normalise the
+    difference. None means the function produced no value at all.
+    """
+    data = getattr(response, "data", None)
+    if isinstance(data, list):
+        return data[0] if data else None
+    return data
+
+
 def _parse_vector(value: object) -> list[float] | None:
     """Read a pgvector column.
 
@@ -334,6 +497,18 @@ def _parse_vector(value: object) -> list[float] | None:
             return None
         return [float(part) for part in body.split(",") if part.strip()]
     return None
+
+
+def _format_vector(vector: list[float]) -> str:
+    """Write a vector in pgvector's text input form.
+
+    The mirror of `_parse_vector`, and a string for the same reason: `::vector`
+    parses text, so sending the literal `[0.1,0.2]` is unambiguous, whereas
+    relying on a JSON array being coerced into a scalar depends on a PostgREST
+    behaviour that has changed between versions. Full precision, because rounding
+    a query vector silently changes what it retrieves.
+    """
+    return "[" + ",".join(repr(value) for value in vector) + "]"
 
 
 def _batched(items: list[str], size: int) -> list[list[str]]:

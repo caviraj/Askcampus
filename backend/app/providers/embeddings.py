@@ -16,5 +16,14 @@ class EmbeddingProvider(Protocol):
         ...
 
     async def embed(self, texts: list[str]) -> list[list[float]]:
-        """Embed a batch of texts, returning one vector per input, in order."""
+        """Embed a batch of document text, returning one vector per input, in order."""
+        ...
+
+    async def embed_query(self, text: str) -> list[float]:
+        """Embed one search question.
+
+        Separate from `embed` because the two are not interchangeable:
+        ARCHITECTURE.md section 9's task types are asymmetric, so a question
+        embedded as a document retrieves worse with nothing to show for it.
+        """
         ...
