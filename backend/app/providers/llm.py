@@ -1,8 +1,8 @@
 """LLM provider interface.
 
-No implementation yet: the Gemini provider arrives in Phase 2 with the answering
-pipeline. Services depend on this Protocol, never on a vendor SDK, so the model
-can be swapped without touching business logic.
+Services depend on this Protocol, never on a vendor SDK, so the model can be
+swapped without touching business logic. The implementation is
+app/providers/gemini.py; it is exercised in Phase 3, when answering arrives.
 """
 
 from __future__ import annotations

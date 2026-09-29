@@ -12,11 +12,16 @@ from fastapi.middleware.cors import CORSMiddleware
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from app import __version__
-from app.api import admin, health
+from app.api import admin, documents, health
 from app.api.errors import api_error_handler, validation_error_handler
 from app.config import Settings, get_settings
 from app.db.client import close_db_client, init_db_client
+from app.db.queries import (
+    CHUNK_EMBEDDING_DIMENSIONS,
+    reap_orphaned_processing_documents,
+)
 from app.logging_config import configure_logging
+from app.providers.gemini import GeminiProvider
 from app.services.auth import TokenVerifier
 
 logger = logging.getLogger(__name__)
@@ -33,7 +38,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
+        _check_embedding_width(settings)
         await init_db_client(settings)
+        await _reap_orphaned_documents()
         # Best-effort: warms the JWKS cache but never fails startup, so the app
         # boots with no network.
         await app.state.token_verifier.warm_cache()
@@ -45,6 +52,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app = FastAPI(title="CampusAsk API", version=__version__, lifespan=lifespan)
     app.state.settings = settings
     app.state.token_verifier = TokenVerifier(settings)
+    # Built once rather than per request: constructing a genai client builds an
+    # HTTP connection pool, and doing that on every upload would throw it away
+    # each time. No network call happens here.
+    app.state.embedding_provider = GeminiProvider(settings)
 
     # allow_credentials stays False: the access token travels in an
     # Authorization header, not a cookie, so credentialed CORS would buy nothing
@@ -62,6 +73,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     app.include_router(health.router)
     app.include_router(admin.router)
+    app.include_router(documents.router)
 
     logger.info(
         "CampusAsk API %s starting in %s mode; CORS origins: %s",
@@ -70,6 +82,49 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         ", ".join(settings.cors_origins) or "(none)",
     )
     return app
+
+
+def _check_embedding_width(settings: Settings) -> None:
+    """Refuse to start if the configured vector width is not the column's.
+
+    A mismatch would not surface until the first upload, as a pgvector cast error
+    that never mentions dimensions -- and by then it arrives inside a background
+    task, where it is recorded as a document failure rather than as the
+    configuration mistake it is.
+    """
+    if settings.embedding_dimensions != CHUNK_EMBEDDING_DIMENSIONS:
+        raise RuntimeError(
+            f"EMBEDDING_DIMENSIONS is {settings.embedding_dimensions} but the chunks "
+            f"table stores vector({CHUNK_EMBEDDING_DIMENSIONS}). Set it to "
+            f"{CHUNK_EMBEDDING_DIMENSIONS}, or add a migration that resizes the column."
+        )
+
+
+async def _reap_orphaned_documents() -> None:
+    """Mark documents left mid-processing by a process that died.
+
+    Ingestion runs as a background task, so it does not survive a kill -9 or a
+    hard restart: the row stays `processing` with nothing working on it, and the
+    admin sees a spinner that never resolves. At startup nothing in this process
+    is processing, so there are no false positives.
+
+    Best-effort, like the JWKS warm-up: an unreachable database at boot should not
+    stop the app from starting, and the log says plainly what was missed.
+    """
+    try:
+        count = await reap_orphaned_processing_documents()
+    except Exception:  # noqa: BLE001 - startup must not fail on this
+        logger.warning(
+            "Could not check for interrupted document processing at startup.", exc_info=True
+        )
+        return
+
+    if count:
+        logger.warning(
+            "Marked %d document(s) as failed: they were left mid-processing by a "
+            "previous run and need reprocessing.",
+            count,
+        )
 
 
 app = create_app()

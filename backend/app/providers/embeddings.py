@@ -1,6 +1,7 @@
 """Embedding provider interface.
 
-No implementation yet: the Gemini provider arrives in Phase 2 with ingestion.
+Services depend on this Protocol, never on a vendor SDK. The implementation is
+app/providers/gemini.py; tests use a fake, so the suite runs offline.
 """
 
 from __future__ import annotations

@@ -19,3 +19,12 @@ httpx==0.28.1
 
 # Multipart uploads (Phase 2) — declared now so the pin is settled.
 python-multipart==0.0.32
+
+# --- Ingestion (Phase 2) ---------------------------------------------------
+# Text extraction. Both ship prebuilt wheels, so no compiler is needed.
+PyMuPDF==1.28.2      # PDF text, layout, tables
+python-docx==1.2.0   # DOCX paragraphs and tables
+
+# Gemini embeddings and generation. Pulls httpx >=0.28.1,<1.0; supabase-py caps
+# httpx at <0.29, so 0.28.1 above satisfies both.
+google-genai==2.25.0

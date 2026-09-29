@@ -11,6 +11,7 @@ from __future__ import annotations
 import logging
 
 from supabase import AsyncClient, create_async_client
+from supabase.lib.client_options import AsyncClientOptions
 
 from app.config import Settings
 
@@ -30,6 +31,10 @@ async def init_db_client(settings: Settings) -> AsyncClient:
         _client = await create_async_client(
             settings.supabase_url,
             settings.supabase_service_role_key.get_secret_value(),
+            # The default storage timeout is 20 s. A 20 MB document over a slow
+            # link exceeds that, and the failure would look like a corrupt file
+            # rather than a timeout, so it is raised from config.
+            AsyncClientOptions(storage_client_timeout=int(settings.storage_timeout_seconds)),
         )
         logger.info("Supabase client initialised for %s", settings.supabase_url)
     return _client
@@ -46,11 +51,13 @@ async def close_db_client() -> None:
 
     supabase-py 2.31.0's AsyncClient exposes no close()/aclose() of its own, so
     the httpx transports are closed through the sub-clients. `auth` and
-    `realtime` are built eagerly in __init__; `postgrest` is built on the first
-    .table()/.rpc() call and kept in a private slot -- reading that slot via
-    getattr avoids *creating* a postgrest client purely in order to close it.
-    `storage` and `functions` are lazy and untouched in Phase 1; Phase 2 closes
-    storage when uploads arrive.
+    `realtime` are built eagerly in __init__; `postgrest` and `storage` are built
+    on first use and kept in private slots -- reading those slots via getattr
+    avoids *creating* a client purely in order to close it.
+
+    Storage needs separate handling: its async client has no aclose()/close(), so
+    its httpx session is closed directly. Without this the connection pool leaks
+    on every shutdown of a process that uploaded a document.
 
     Failures here are logged, not raised: a shutdown error must not mask the
     real exit status.
@@ -60,7 +67,9 @@ async def close_db_client() -> None:
     if client is None:
         return
 
-    sub_clients = (client.auth, client.realtime, getattr(client, "_postgrest", None))
+    storage = getattr(client, "_storage", None)
+
+    sub_clients = (client.auth, client.realtime, getattr(client, "_postgrest", None), storage)
     for sub in sub_clients:
         if sub is None:
             continue
@@ -71,3 +80,10 @@ async def close_db_client() -> None:
             await close()
         except Exception:  # noqa: BLE001 - shutdown must not raise
             logger.warning("Failed to close a Supabase sub-client", exc_info=True)
+
+    session = getattr(storage, "session", None)
+    if session is not None:
+        try:
+            await session.aclose()
+        except Exception:  # noqa: BLE001 - shutdown must not raise
+            logger.warning("Failed to close the storage session", exc_info=True)

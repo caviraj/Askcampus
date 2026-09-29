@@ -11,6 +11,9 @@ import os
 
 os.environ.setdefault("SUPABASE_URL", "https://test-project.supabase.co")
 os.environ.setdefault("SUPABASE_SERVICE_ROLE_KEY", "test-service-role-key")
+# Required from Phase 2. A dummy value is enough: every test that would reach
+# Gemini runs against a fake provider, so no network call is ever made.
+os.environ.setdefault("GEMINI_API_KEY", "test-gemini-api-key")
 
 from collections.abc import AsyncIterator  # noqa: E402
 from uuid import UUID  # noqa: E402
@@ -21,19 +24,31 @@ from cryptography.hazmat.primitives.asymmetric import ec  # noqa: E402
 from fastapi import FastAPI  # noqa: E402
 
 from app.api.auth_deps import get_profile_repository, get_token_verifier  # noqa: E402
+from app.api.documents import (  # noqa: E402
+    get_document_repository,
+    get_file_storage,
+    get_ingestion_service,
+)
 from app.config import Settings  # noqa: E402
 from app.main import create_app  # noqa: E402
 from app.schemas.auth import Profile  # noqa: E402
 from app.services.auth import TokenVerifier  # noqa: E402
+from app.services.embedding import EmbeddingService  # noqa: E402
+from app.services.ingestion import IngestionService  # noqa: E402
 from tests.fakes import (  # noqa: E402
     TEST_AUDIENCE,
     TEST_ISSUER,
     TEST_KID,
     TEST_SUPABASE_URL,
+    FakeEmbeddingProvider,
+    InMemoryDocumentRepository,
+    InMemoryEmbeddingCache,
+    InMemoryFileStorage,
     InMemoryProfileRepository,
     StubJWKClient,
     generate_keypair,
     jwks_for,
+    mint_token,
 )
 
 ADMIN_ID = UUID("11111111-1111-1111-1111-111111111111")
@@ -48,6 +63,7 @@ def settings() -> Settings:
         _env_file=None,
         supabase_url=TEST_SUPABASE_URL,
         supabase_service_role_key="test-service-role-key",
+        gemini_api_key="test-gemini-api-key",
     )
 
 
@@ -73,15 +89,69 @@ def profile_repository() -> InMemoryProfileRepository:
 
 
 @pytest.fixture
+def document_repository() -> InMemoryDocumentRepository:
+    return InMemoryDocumentRepository()
+
+
+@pytest.fixture
+def file_storage() -> InMemoryFileStorage:
+    return InMemoryFileStorage()
+
+
+@pytest.fixture
+def embedding_provider() -> FakeEmbeddingProvider:
+    return FakeEmbeddingProvider()
+
+
+@pytest.fixture
 def app(
     settings: Settings,
     verifier: TokenVerifier,
     profile_repository: InMemoryProfileRepository,
+    document_repository: InMemoryDocumentRepository,
+    file_storage: InMemoryFileStorage,
+    embedding_provider: FakeEmbeddingProvider,
 ) -> FastAPI:
     application = create_app(settings)
     application.dependency_overrides[get_token_verifier] = lambda: verifier
     application.dependency_overrides[get_profile_repository] = lambda: profile_repository
+    # The document routes are wired to fakes for every API test, so no test can
+    # reach Supabase or Gemini by forgetting to override something. The ingestion
+    # service is built here rather than overridden wholesale so its real
+    # orchestration runs behind the routes.
+    application.dependency_overrides[get_document_repository] = lambda: document_repository
+    application.dependency_overrides[get_file_storage] = lambda: file_storage
+    application.dependency_overrides[get_ingestion_service] = lambda: IngestionService(
+        document_repository,
+        file_storage,
+        EmbeddingService(embedding_provider, settings, InMemoryEmbeddingCache()),
+        settings,
+    )
     return application
+
+
+@pytest.fixture
+def admin_headers(private_key: ec.EllipticCurvePrivateKey) -> dict[str, str]:
+    """Authorization for an admin, which every /admin route requires."""
+    return {"Authorization": f"Bearer {mint_token(private_key, sub=ADMIN_ID)}"}
+
+
+@pytest.fixture
+def staff_headers(private_key: ec.EllipticCurvePrivateKey) -> dict[str, str]:
+    return {"Authorization": f"Bearer {mint_token(private_key, sub=STAFF_ID)}"}
+
+
+@pytest.fixture
+async def authorized(
+    app: FastAPI, admin_headers: dict[str, str]
+) -> AsyncIterator[httpx.AsyncClient]:
+    """A client whose every request is already authorized as an admin."""
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app),
+        base_url="http://test",
+        headers=admin_headers,
+    ) as http_client:
+        yield http_client
 
 
 @pytest.fixture
