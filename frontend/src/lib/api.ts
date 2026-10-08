@@ -189,7 +189,7 @@ function toSession(token: SupabaseTokenResponse, fallbackEmail: string): AdminSe
   };
 }
 
-async function authRequest(path: string, body: Record<string, string>): Promise<Response> {
+async function authRequest(path: string, body: unknown): Promise<Response> {
   const url = supabaseUrl();
   if (!url || !supabaseAnonKey()) {
     throw new ApiError(503, "Sign-in is not configured.", "auth_not_configured");
@@ -208,6 +208,34 @@ async function authRequest(path: string, body: Record<string, string>): Promise<
 export async function signIn(email: string, password: string): Promise<AdminSession> {
   const response = await authRequest("token?grant_type=password", { email, password });
   return toSession(await readAuthJson<SupabaseTokenResponse>(response), email);
+}
+
+export interface SignUpResult {
+  session: AdminSession | null;
+  needsEmailConfirmation: boolean;
+}
+
+export async function signUp(
+  email: string,
+  password: string,
+  metadata?: { role?: string; full_name?: string },
+): Promise<SignUpResult> {
+  const payload: Record<string, unknown> = { email, password };
+  if (metadata) {
+    payload.data = metadata;
+  }
+  const response = await authRequest("signup", payload);
+  const data = await readAuthJson<SupabaseTokenResponse & { id?: string }>(response);
+  if (data.access_token) {
+    return {
+      session: toSession(data, email),
+      needsEmailConfirmation: false,
+    };
+  }
+  return {
+    session: null,
+    needsEmailConfirmation: true,
+  };
 }
 
 export async function refreshSession(refreshToken: string): Promise<AdminSession> {

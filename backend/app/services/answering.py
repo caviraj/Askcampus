@@ -207,11 +207,14 @@ class AnsweringService:
 
         Returns None when neither attempt produced a usable answer.
 
-        A provider failure is not given a second attempt. `ARCHITECTURE.md`
-        section 5.2's "retry once" is written about citation validation, and the
-        configured timeout is 30 seconds -- a student waiting through a second
-        one is worse served than a student told plainly that the documents do not
-        answer this.
+        A provider failure is not given a second attempt *here*. Two reasons,
+        and the second is the one that changed. `ARCHITECTURE.md` section 5.2's
+        "retry once" is written about citation validation, not transport. And
+        the transport retry already happened: `GeminiProvider.generate_json`
+        retries a transient failure and moves to a fallback model alias before
+        it raises, so a `ProviderError` reaching this line has either spent that
+        budget or is permanent. Repeating it here would multiply the two
+        policies rather than reinforce them.
 
         The retry is not the same request again. The provider runs at temperature
         0, so re-sending an identical prompt would be near-deterministic; the

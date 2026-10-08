@@ -66,6 +66,12 @@ class Settings(BaseSettings):
     # swallowed by the web server and the document is left stuck in `processing`.
     gemini_api_key: SecretStr
 
+    # Groq API configuration. If groq_api_key is set, GroqProvider is used as
+    # the LLMProvider for answering student questions.
+    groq_api_key: SecretStr | None = None
+    groq_model: str = "openai/gpt-oss-120b"
+    groq_fallback_models: CommaSeparated = ["openai/gpt-oss-20b"]
+
     # ARCHITECTURE.md section 2 named gemini-2.5-flash, which Google now
     # restricts to projects that used it before a cutoff; new projects are
     # pointed at the 3.x line. Overridable, so a key that still has 2.5 access
@@ -138,6 +144,29 @@ class Settings(BaseSettings):
     provider_timeout_seconds: float = Field(default=30.0, gt=0)
     embedding_cache_enabled: bool = True
 
+    # Generation. Retrying here is cheaper than it looks: an overloaded model
+    # refuses immediately rather than at the timeout, so two retries cost the
+    # student a couple of seconds, not two more 30 s waits.
+    llm_max_retries: int = Field(default=2, ge=0)
+
+    # Model *alias* failover, which is a different lever from a retry. A 503 is
+    # usually per model rather than per account: measured on 2026-09-30,
+    # gemini-3.5-flash refused every request while gemini-3.8-flash and
+    # gemini-flash-latest both answered normally. Asking a sibling is therefore
+    # more likely to succeed than asking the same overloaded model again.
+    #
+    # The default is deliberately a moving alias. The point is a safety net
+    # under load, not a model choice, and pinning a version here would make an
+    # outage fix expire on a deprecation date. Set it empty to disable failover
+    # and retry the configured model alone.
+    llm_fallback_models: CommaSeparated = ["gemini-flash-latest"]
+
+    # Note for anyone tempted to copy this list onto the embedding side: do not.
+    # Chunk vectors are *stored*, and two embedding models do not share a vector
+    # space, so failing over there would fill the index with vectors no query
+    # can ever match -- a silent, unrecoverable recall failure. Embedding
+    # retries the same model instead, in `services/embedding.py`.
+
     # Storage. The bucket is created by migration 0003.
     storage_bucket: str = "documents"
     storage_timeout_seconds: float = Field(default=60.0, gt=0)
@@ -184,6 +213,13 @@ class Settings(BaseSettings):
 
     environment: Literal["local", "dev", "prod"] = "local"
     log_level: str = "INFO"
+
+    @field_validator("groq_api_key", mode="before")
+    @classmethod
+    def _empty_groq_key_to_none(cls, value: object) -> object:
+        if isinstance(value, str) and not value.strip():
+            return None
+        return value
 
     @field_validator("supabase_url")
     @classmethod

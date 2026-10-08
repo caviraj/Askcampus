@@ -27,6 +27,7 @@ from app.db.queries import (
 from app.logging_config import configure_logging
 from app.providers.errors import ProviderError
 from app.providers.gemini import GeminiProvider
+from app.providers.groq import GroqProvider
 from app.services.auth import TokenVerifier
 from app.services.ratelimit import SlidingWindowRateLimiter
 
@@ -53,6 +54,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         try:
             yield
         finally:
+            if hasattr(app.state.llm_provider, "aclose"):
+                await app.state.llm_provider.aclose()
             await close_db_client()
 
     app = FastAPI(title="CampusAsk API", version=__version__, lifespan=lifespan)
@@ -62,10 +65,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     # HTTP connection pool, and doing that on every upload would throw it away
     # each time. No network call happens here.
     app.state.embedding_provider = GeminiProvider(settings)
-    # One instance serves both protocols, but the two names say which one a call
-    # site means -- an embedding failure and a generation failure are handled
-    # differently, so the difference is worth spelling out where it is read.
-    app.state.llm_provider = app.state.embedding_provider
+    # Use Groq for LLM generation when configured; otherwise fall back to Gemini.
+    if settings.groq_api_key:
+        app.state.llm_provider = GroqProvider(settings)
+    else:
+        app.state.llm_provider = app.state.embedding_provider
     # Per app rather than module-level, so every test gets counters of its own.
     app.state.rate_limiter = SlidingWindowRateLimiter(limit=settings.chat_rate_limit_per_minute)
 

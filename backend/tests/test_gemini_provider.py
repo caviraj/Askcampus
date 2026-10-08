@@ -59,6 +59,53 @@ def _embedding_response(vectors: list[list[float]]) -> Any:
     return SimpleNamespace(embeddings=[SimpleNamespace(values=vector) for vector in vectors])
 
 
+class _SequencedModels:
+    """A client whose generation attempts follow a scripted list of outcomes.
+
+    `_FakeModels` answers the same way every time, which cannot show *how many*
+    attempts happened or *which model* each one used -- and those two are the
+    whole of the retry behaviour. Running off the end of the script raises
+    IndexError, which is the intended failure: it means the provider tried more
+    times than the configured bound allowed.
+    """
+
+    def __init__(self, outcomes: list[Any]) -> None:
+        self._outcomes = list(outcomes)
+        self.generate_calls: list[dict[str, Any]] = []
+
+    async def generate_content(self, **kwargs: Any) -> Any:
+        self.generate_calls.append(kwargs)
+        outcome = self._outcomes.pop(0)
+        if isinstance(outcome, Exception):
+            raise outcome
+        return outcome
+
+    @property
+    def models_used(self) -> list[str]:
+        return [call["model"] for call in self.generate_calls]
+
+
+def _generated(answer: str) -> Any:
+    return SimpleNamespace(text=f'{{"answerable": true, "answer": "{answer}"}}')
+
+
+def _sequenced_provider(
+    settings: Settings,
+    models: _SequencedModels,
+    monkeypatch: pytest.MonkeyPatch,
+    **overrides: Any,
+) -> GeminiProvider:
+    """A provider whose generation is scripted, with the backoff switched off.
+
+    The backoff is real behaviour worth keeping, but sleeping through it in every
+    test buys no coverage and costs seconds. It is asserted separately, by
+    `test_the_backoff_grows_between_attempts`.
+    """
+    tuned = settings.model_copy(update={"retry_backoff_seconds": 0.0, **overrides})
+    monkeypatch.setattr(gemini_module.genai, "Client", lambda **kwargs: _FakeClient(models))
+    return GeminiProvider(tuned)
+
+
 @pytest.fixture
 def models() -> _FakeModels:
     return _FakeModels()
@@ -255,6 +302,160 @@ async def test_generate_json_rejects_an_empty_response(
     with pytest.raises(ProviderError) as raised:
         await provider.generate_json("prompt", _Payload)
     assert raised.value.transient is True
+
+
+async def test_a_transient_generation_failure_is_retried(
+    settings: Settings, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The failure this whole mechanism exists for.
+
+    A 503 from an overloaded model used to travel straight to
+    `AnsweringService`, which turned it into a fallback -- so a capacity spike
+    was reported to the student as "not in the documents". That is the one thing
+    the fallback message must never be: it is a claim about the corpus, and it
+    was a claim about Google's capacity.
+    """
+    models = _SequencedModels([_http_error(503), _generated("Fees are due in June.")])
+    provider = _sequenced_provider(settings, models, monkeypatch)
+
+    payload = await provider.generate_json("prompt", _Payload)
+
+    assert payload.answer == "Fees are due in June."
+    assert len(models.generate_calls) == 2
+
+
+async def test_a_retry_moves_to_the_next_model_alias(
+    settings: Settings, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A 503 is usually one model, not the whole account.
+
+    Measured on 2026-09-30: `gemini-3.5-flash` refused every request while
+    `gemini-3.8-flash` and `gemini-flash-latest` answered normally, in the same
+    minute with the same key. Asking a sibling is therefore the cheaper retry,
+    and it is the reason this is more than a `for` loop with a sleep in it.
+    """
+    models = _SequencedModels([_http_error(503), _generated("ok")])
+    provider = _sequenced_provider(
+        settings,
+        models,
+        monkeypatch,
+        llm_model="primary-model",
+        llm_fallback_models=["sibling-model"],
+    )
+
+    await provider.generate_json("prompt", _Payload)
+
+    assert models.models_used == ["primary-model", "sibling-model"]
+
+
+async def test_a_permanent_failure_is_not_retried(
+    settings: Settings, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A retired model returns the same 404 on every attempt. Retrying it turns
+    a fast, clear failure into a slow one, which is the property the provider's
+    error classification was written to keep."""
+    models = _SequencedModels([_http_error(404)])
+    provider = _sequenced_provider(settings, models, monkeypatch)
+
+    with pytest.raises(ProviderError) as raised:
+        await provider.generate_json("prompt", _Payload)
+
+    assert raised.value.transient is False
+    assert len(models.generate_calls) == 1
+
+
+async def test_a_malformed_payload_is_not_retried(
+    settings: Settings, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Handled by `AnsweringService`, which re-asks with a correction that says
+    what was wrong. Repeating the identical prompt is near-deterministic at
+    temperature 0, so a transport-level retry of it would achieve nothing."""
+    models = _SequencedModels([SimpleNamespace(text='{"answerable": "yes"}')])
+    provider = _sequenced_provider(settings, models, monkeypatch)
+
+    with pytest.raises(ProviderError) as raised:
+        await provider.generate_json("prompt", _Payload)
+
+    assert raised.value.transient is False
+    assert len(models.generate_calls) == 1
+
+
+async def test_retries_are_bounded(settings: Settings, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Scripted with exactly the attempts the bound allows.
+
+    A fourth attempt would find an empty script and raise IndexError, so
+    exceeding the bound fails the test instead of passing slowly -- the bound is
+    what keeps this from becoming an unbounded wait behind a student.
+    """
+    models = _SequencedModels([_http_error(503) for _ in range(3)])
+    provider = _sequenced_provider(settings, models, monkeypatch, llm_max_retries=2)
+
+    with pytest.raises(ProviderError) as raised:
+        await provider.generate_json("prompt", _Payload)
+
+    assert raised.value.transient is True
+    assert len(models.generate_calls) == 3
+
+
+async def test_failover_reuses_the_last_alias_once_it_runs_out(
+    settings: Settings, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """More retries than aliases must not index past the end of the list."""
+    models = _SequencedModels([_http_error(503) for _ in range(4)])
+    provider = _sequenced_provider(
+        settings,
+        models,
+        monkeypatch,
+        llm_max_retries=3,
+        llm_model="primary",
+        llm_fallback_models=["sibling"],
+    )
+
+    with pytest.raises(ProviderError):
+        await provider.generate_json("prompt", _Payload)
+
+    assert models.models_used == ["primary", "sibling", "sibling", "sibling"]
+
+
+async def test_an_empty_fallback_list_retries_the_configured_model(
+    settings: Settings, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Emptying the list disables failover and keeps the retry. It must not
+    quietly become the configured model named twice."""
+    models = _SequencedModels([_http_error(503), _generated("ok")])
+    provider = _sequenced_provider(
+        settings, models, monkeypatch, llm_model="only", llm_fallback_models=[]
+    )
+
+    await provider.generate_json("prompt", _Payload)
+
+    assert models.models_used == ["only", "only"]
+
+
+async def test_the_backoff_grows_between_attempts(
+    settings: Settings, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Exponential rather than constant, matching the embedding retry. A blip
+    that clears in a moment should not be hammered at a fixed interval."""
+    models = _SequencedModels([_http_error(503) for _ in range(3)])
+    delays: list[float] = []
+
+    async def record(delay: float) -> None:
+        delays.append(delay)
+
+    monkeypatch.setattr(gemini_module.asyncio, "sleep", record)
+    provider = _sequenced_provider(
+        settings,
+        models,
+        monkeypatch,
+        retry_backoff_seconds=0.5,
+        llm_max_retries=2,
+    )
+
+    with pytest.raises(ProviderError):
+        await provider.generate_json("prompt", _Payload)
+
+    assert delays == [0.5, 1.0]
 
 
 @pytest.mark.parametrize("status", [408, 425, 429, 500, 502, 503, 504])

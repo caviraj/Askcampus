@@ -6,6 +6,7 @@ this package, so the model can be replaced without touching business logic.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import math
 
@@ -117,10 +118,59 @@ class GeminiProvider:
         return vectors
 
     async def generate_json(self, prompt: str, schema: type[ResponseT]) -> ResponseT:
-        """Generate a response constrained to `schema`, already validated."""
+        """Generate a response constrained to `schema`, already validated.
+
+        A transient failure is retried, and the retry moves to the next model
+        alias. Both halves matter and they are not the same fix: a 503 is
+        usually one model being overloaded rather than the account being
+        throttled, so the cheapest way past it is to ask a sibling rather than
+        to ask the same model again more slowly.
+
+        This lives here rather than in `AnsweringService` because the model
+        alias is a provider concern -- the service holds no model name and
+        should not learn one just to route around an outage. The service's
+        contract is unchanged: it still sees a `ProviderError` when the model
+        genuinely could not be reached, only after the cheap attempts are spent.
+
+        A permanent failure still raises on the first attempt. A retired model
+        returns the same 404 every time, and retrying it turns a fast, clear
+        error into a slow one.
+        """
+        models = [self._settings.llm_model, *self._settings.llm_fallback_models]
+
+        for attempt in range(self._settings.llm_max_retries + 1):
+            model = models[min(attempt, len(models) - 1)]
+            try:
+                return await self._generate_once(prompt, schema, model=model)
+            except ProviderError as exc:
+                last_attempt = attempt >= self._settings.llm_max_retries
+                if not exc.transient or last_attempt:
+                    raise
+
+                following = models[min(attempt + 1, len(models) - 1)]
+                delay = self._settings.retry_backoff_seconds * (2**attempt)
+                logger.warning(
+                    "Generation with %s failed, retrying with %s in %.1fs (%d of %d): %s",
+                    model,
+                    following,
+                    delay,
+                    attempt + 1,
+                    self._settings.llm_max_retries,
+                    exc,
+                )
+                await asyncio.sleep(delay)
+
+        # Unreachable: the loop either returns or raises on its last pass. Kept
+        # so the function cannot fall off the end if that changes.
+        raise ProviderError("The model could not be reached.", transient=True)
+
+    async def _generate_once(
+        self, prompt: str, schema: type[ResponseT], *, model: str
+    ) -> ResponseT:
+        """One generation attempt against one model, with no retry of its own."""
         try:
             response = await self._client.aio.models.generate_content(
-                model=self._settings.llm_model,
+                model=model,
                 contents=prompt,
                 config=types.GenerateContentConfig(
                     response_mime_type="application/json",

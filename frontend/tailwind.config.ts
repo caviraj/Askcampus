@@ -7,17 +7,32 @@ export default {
   content: ["./index.html", "./src/**/*.{ts,tsx}"],
   theme: {
     extend: {
+      // Every colour is now a custom property defined in `styles/tokens.css`,
+      // which holds DESIGN_SYSTEM.md section 12's block verbatim plus the dark
+      // theme. The rendered light values are identical to the hex literals this
+      // replaced -- the indirection buys a theme switch and costs nothing.
+      //
+      // The trade it does cost: Tailwind cannot apply an alpha modifier to a
+      // `var()`, so `bg-ink/40` and `bg-highlight/60` no longer work. Both were
+      // replaced by named tokens (`scrim`, `highlight-wash`) in the same change.
       colors: {
-        paper: "#F1F3F2",
-        surface: "#FFFFFF",
-        ink: "#17262B",
-        "ink-soft": "#4A5D63",
-        rule: "#D5DCDA",
-        marine: { DEFAULT: "#0E5A6B", deep: "#0A4350", wash: "#DCEBEE" },
-        highlight: "#F6D84C",
-        moss: "#2E7A55",
-        brick: "#A83A2E",
-        "amber-ink": "#7A5A00",
+        paper: "var(--paper)",
+        surface: "var(--surface)",
+        ink: { DEFAULT: "var(--ink)", soft: "var(--ink-soft)" },
+        rule: "var(--rule)",
+        marine: {
+          DEFAULT: "var(--marine)",
+          deep: "var(--marine-deep)",
+          wash: "var(--marine-wash)",
+        },
+        "on-marine": "var(--on-marine)",
+        "on-highlight": "var(--on-highlight)",
+        highlight: "var(--highlight)",
+        "highlight-wash": "var(--highlight-wash)",
+        scrim: "var(--scrim)",
+        moss: "var(--moss)",
+        brick: "var(--brick)",
+        "amber-ink": "var(--amber-ink)",
       },
       fontFamily: {
         serif: ['"Source Serif 4"', "Georgia", "serif"],

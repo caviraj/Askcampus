@@ -25,6 +25,69 @@
   --measure: 65ch;
 }
 
+/*
+ * Additions to the spec's block, not alterations to it. Four roles the spec
+ * leaves implicit because the app it was written for never needed to name them:
+ * text drawn *on* a filled control, and two composites that were previously
+ * written as Tailwind alpha modifiers (`bg-ink/40`, `bg-highlight/60`).
+ *
+ * They are tokens rather than modifiers because the palette moved to custom
+ * properties in the same change that added the dark theme -- which is what
+ * makes a theme switchable at all. `bg-ink/40` cannot survive that move: an
+ * alpha modifier needs Tailwind to decompose a colour it can parse, and
+ * `var(--ink)` is not one. Naming the composite is the honest fix, and it is
+ * also more accurate: 40% ink over the paper is not 40% ink over a photograph.
+ */
+:root {
+  /* Text on a marine-filled button. White in light mode; near-black in dark,
+     where marine becomes a light colour. */
+  --on-marine: #FFFFFF;
+  /* Text on the highlight wash. Ink in both themes, because the yellow stays
+     yellow -- it is the one colour the spec pins for a single purpose. */
+  --on-highlight: #17262B;
+  /* The dialog scrim. Was `bg-ink/40`. */
+  --scrim: rgba(23, 38, 43, 0.4);
+  /* The marking behind a cited sentence. Was `bg-highlight/60`, composited. */
+  --highlight-wash: #FAE894;
+}
+
+/*
+ * The dark theme, opt-in through `data-theme="dark"` on the root element rather
+ * than through `prefers-color-scheme` alone.
+ *
+ * Opt-in is deliberate. The authenticated app -- the chat, the admin screens --
+ * was designed light and has not been audited dark; flipping it from a media
+ * query would restyle screens nobody re-checked. The public pages set the
+ * attribute and offer the toggle; leaving them clears it. When the app is
+ * audited dark, deleting the two lines that clear it is the whole change.
+ *
+ * Hue relationships are preserved rather than inverted: paper and surface keep
+ * their order (page behind, card in front), marine stays the one accent, and
+ * highlight stays the same yellow because its job -- marking a passage -- does
+ * not depend on the theme. Every text pair below is checked at 4.5:1 or better
+ * against the surface it is actually drawn on; the numbers are in the Phase 6
+ * accessibility notes and recomputed by `npm test`.
+ */
+[data-theme="dark"] {
+  --paper: #0F1B1F;
+  --surface: #17262B;
+  --ink: #E9EEED;
+  --ink-soft: #A6B6BA;
+  --rule: #2D4046;
+  --marine: #58B3C6;
+  --marine-deep: #7ACBDC;
+  --marine-wash: #143139;
+  --highlight: #F6D84C;
+  --moss: #5FBF8B;
+  --brick: #E8796A;
+  --amber-ink: #E3B85A;
+
+  --on-marine: #08161A;
+  --on-highlight: #17262B;
+  --scrim: rgba(0, 0, 0, 0.62);
+  --highlight-wash: #6B5A18;
+}
+
 @media (prefers-reduced-motion: reduce) {
   * { animation: none !important; transition: none !important; }
 }

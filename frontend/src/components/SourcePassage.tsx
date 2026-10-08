@@ -32,7 +32,7 @@ export function SourcePassage({ citation, answer }: SourcePassageProps) {
         {highlighted ? (
           <>
             {highlighted.before}
-            <mark className="bg-highlight/60">{highlighted.match}</mark>
+            <mark className="bg-highlight-wash text-on-highlight">{highlighted.match}</mark>
             {highlighted.after}
           </>
         ) : (
